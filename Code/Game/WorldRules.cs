@@ -29,6 +29,55 @@ namespace MetaRules.Game
             return trait != null && !actor.hasOppositeTrait(trait) && actor.addTrait(trait, false);
         }
         public void RemoveTrait(string id) => actor.removeTrait(id);
+
+        public string SlotOf(string id)
+        {
+            EquipmentAsset asset = AssetManager.items.get(id);
+            if (asset == null || !asset.can_be_given || actor.equipment == null || !actor.canUseItems() || !actor.asset.canEditItem(asset)) return null;
+            return asset.equipment_type.ToString();
+        }
+
+        static bool TryType(string slot, out EquipmentType type) => Enum.TryParse(slot, out type);
+
+        public long Equipped(string slot, out string item)
+        {
+            item = null;
+            if (actor.equipment == null || !TryType(slot, out EquipmentType type)) return -1;
+            ActorEquipmentSlot place = actor.equipment.getSlot(type);
+            if (place.isEmpty()) return -1;
+            item = place.getItem().getAsset()?.id;
+            return place.getItem().data.id;
+        }
+
+        public long Equip(string id)
+        {
+            EquipmentAsset asset = AssetManager.items.get(id);
+            if (asset == null || actor.equipment == null) return -1;
+            ActorEquipmentSlot place = actor.equipment.getSlot(asset.equipment_type);
+            if (!place.canChangeSlot()) return -1;
+            Item displaced = place.isEmpty() ? null : place.getItem();
+            Item item = World.world.items.generateItem(asset, actor.kingdom, World.world.map_stats.player_name, 1, actor, 0, true);
+            if (displaced != null)
+            {
+                place.takeAwayItem();
+                // Like a native upgrade, the previous item returns to the city instead of vanishing.
+                if (actor.city != null && actor.city.isAlive())
+                {
+                    actor.city.data.equipment.addItem(actor.city, displaced);
+                    actor.city._storage_version++;
+                }
+            }
+            actor.equipment.setItem(item, actor);
+            actor.setStatsDirty();
+            return item.data.id;
+        }
+
+        public void Unequip(string slot)
+        {
+            if (actor.equipment == null || !TryType(slot, out EquipmentType type)) return;
+            actor.equipment.getSlot(type).takeAwayItem();
+            actor.setStatsDirty();
+        }
     }
 
     public sealed class ActorState
@@ -184,6 +233,7 @@ namespace MetaRules.Game
             actor.data.get(LedgerKey, out string json, null);
             TraitLedger ledger = string.IsNullOrEmpty(json) ? new TraitLedger() : JsonConvert.DeserializeObject<TraitLedger>(json);
             if (ledger?.Owned == null) throw new InvalidOperationException("Invalid trait provenance for actor " + actor.id);
+            if (ledger.Items == null) ledger.Items = new Dictionary<string, ItemGrant>();
             state = new ActorState { Actor = actor, Ledger = ledger };
             actors[actor.id] = state;
             return state;
@@ -201,7 +251,7 @@ namespace MetaRules.Game
                     Mutating = false;
                 }
                 Evaluation desired = RuleEngine.Evaluate(Applicable(actor));
-                if (desired.Temporary.Count == 0 && desired.Permanent.Count == 0 && desired.Stats.Count == 0 && !actors.ContainsKey(actor.id))
+                if (desired.Empty && !actors.ContainsKey(actor.id))
                 {
                     actor.data.get(LedgerKey, out string savedLedger, null);
                     if (string.IsNullOrEmpty(savedLedger)) return;
@@ -209,7 +259,7 @@ namespace MetaRules.Game
                 ActorState state = State(actor);
                 Mutating = true;
                 RuleEngine.Reconcile(new ActorSubject(actor), desired, state.Ledger);
-                if (state.Ledger.Owned.Count > 0) actor.data.set(LedgerKey, JsonConvert.SerializeObject(state.Ledger));
+                if (!state.Ledger.IsEmpty()) actor.data.set(LedgerKey, JsonConvert.SerializeObject(state.Ledger));
                 else actor.data.removeString(LedgerKey);
                 if (!SameStats(state.Stats, desired.Stats))
                 {
@@ -284,8 +334,10 @@ namespace MetaRules.Game
                 if (AllowedStats.Contains(pair.Key)) actor.stats[pair.Key] += pair.Value;
         }
 
-        public static readonly HashSet<string> AllowedStats = new HashSet<string>
+        // Ordered for display.
+        public static readonly string[] Stats =
         { "health", "damage", "armor", "speed", "attack_speed", "intelligence", "warfare", "diplomacy", "stewardship" };
+        public static readonly HashSet<string> AllowedStats = new HashSet<string>(Stats);
 
         public static bool Allows(Actor actor, MetaHandle target)
         {

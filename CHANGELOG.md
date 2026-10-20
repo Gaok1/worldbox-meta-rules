@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- Declare equipment. Each member receives the item once per membership, in its own slot (the replaced item goes to the city's storage). "While a member" items are removed on leaving if still carried; permanent items are kept. Later swaps, upgrades or breakage are respected, never regenerated.
+- The trait picker follows the native trait editor: grouped by category with native colors, ordered by priority. Equipment follows the native equipment editor.
+- Picker results scroll continuously with group headers instead of pages; searching filters in place without losing focus.
+- Every meta type shows its real banner: subspecies (with creature), families, cultures, kingdoms, cities and armies were previously generic icons.
+- Native window: same size as the game's editors, one continuous scroll view with the native scrollbar. Groups, trait and item buttons and meta banners are the game's own prefabs (native tooltips, sizes and selection marks).
+- Header with banner, member count, incompatibilities and an Active/Paused switch; labeled tabs; visible ALL/ANY, duration and enabled controls; Cancel/Save/Remove footer; stat steppers; a help page.
+- Languages: English and Brazilian Portuguese; European Portuguese (`pt`) uses the pt-BR text, every other language falls back to English.
+
 ## 0.2.0
 
 - Replace the global browser and three-tab editor with one individual meta's banner/name and two visible sections: Declarations and Requirements.

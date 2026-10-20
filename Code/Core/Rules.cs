@@ -5,7 +5,7 @@ namespace MetaRules.Core
 {
     public enum MetaKind { Army, Clan, Culture, Religion, City, Kingdom, Language, Family, Subspecies }
     public enum ConditionKind { Trait, Membership }
-    public enum EffectKind { Trait, Stat }
+    public enum EffectKind { Trait, Stat, Item }
     public enum Lifetime { Membership, Permanent }
 
     [Serializable]
@@ -80,6 +80,11 @@ namespace MetaRules.Core
         bool HasTrait(string id);
         bool AddTrait(string id);
         void RemoveTrait(string id);
+        // Equipment: null slot means this subject cannot carry the item.
+        string SlotOf(string item);
+        long Equipped(string slot, out string item);
+        long Equip(string item);
+        void Unequip(string slot);
     }
 
     // Per-actor save data. Owned=false means this trait also has a non-mod source.
@@ -87,6 +92,18 @@ namespace MetaRules.Core
     public sealed class TraitLedger
     {
         public Dictionary<string, bool> Owned = new Dictionary<string, bool>();
+        public Dictionary<string, ItemGrant> Items = new Dictionary<string, ItemGrant>();
+        public bool IsEmpty() => Owned.Count == 0 && (Items == null || Items.Count == 0);
+    }
+
+    // One equipment declaration served during the current membership. Id=-1 means the
+    // subject already carried that item, so the mod owns nothing in this slot.
+    [Serializable]
+    public sealed class ItemGrant
+    {
+        public string Item = "";
+        public long Id = -1;
+        public bool Permanent;
     }
 
     public sealed class Evaluation
@@ -94,6 +111,9 @@ namespace MetaRules.Core
         public readonly HashSet<string> Temporary = new HashSet<string>(StringComparer.Ordinal);
         public readonly HashSet<string> Permanent = new HashSet<string>(StringComparer.Ordinal);
         public readonly Dictionary<string, float> Stats = new Dictionary<string, float>(StringComparer.Ordinal);
+        // Ordered by group precedence; true means permanent.
+        public readonly List<KeyValuePair<string, bool>> Items = new List<KeyValuePair<string, bool>>();
+        public bool Empty => Temporary.Count == 0 && Permanent.Count == 0 && Stats.Count == 0 && Items.Count == 0;
     }
 
     public static class RuleEngine
@@ -134,6 +154,13 @@ namespace MetaRules.Core
                     {
                         (d.Lifetime == Lifetime.Permanent ? result.Permanent : result.Temporary).Add(d.Value);
                     }
+                    else if (d.Kind == EffectKind.Item)
+                    {
+                        int known = result.Items.FindIndex(i => i.Key == d.Value);
+                        bool permanent = d.Lifetime == Lifetime.Permanent;
+                        if (known < 0) result.Items.Add(new KeyValuePair<string, bool>(d.Value, permanent));
+                        else if (permanent) result.Items[known] = new KeyValuePair<string, bool>(d.Value, true);
+                    }
                     else if (!float.IsNaN(d.Amount) && !float.IsInfinity(d.Amount))
                     {
                         result.Stats.TryGetValue(d.Value, out float prior);
@@ -172,6 +199,47 @@ namespace MetaRules.Core
                     ledger.Owned[trait] = true;
                     changed = true;
                 }
+            }
+            return ReconcileItems(subject, desired, ledger) | changed;
+        }
+
+        // Equipment is served once per membership. Later replacements (city upgrades,
+        // breakage, looting) are respected instead of regenerating items every scan.
+        static bool ReconcileItems(ISubject subject, Evaluation desired, TraitLedger ledger)
+        {
+            if (ledger.Items == null) ledger.Items = new Dictionary<string, ItemGrant>();
+            if (desired.Items.Count == 0 && ledger.Items.Count == 0) return false;
+            bool changed = false;
+            // The first group to declare an item for a slot wins.
+            var chosen = new Dictionary<string, KeyValuePair<string, bool>>(StringComparer.Ordinal);
+            foreach (var item in desired.Items)
+            {
+                string slot = subject.SlotOf(item.Key);
+                if (slot != null && !chosen.ContainsKey(slot)) chosen[slot] = item;
+            }
+            foreach (string slot in new List<string>(ledger.Items.Keys))
+            {
+                ItemGrant grant = ledger.Items[slot];
+                if (chosen.TryGetValue(slot, out var wanted) && wanted.Key == grant.Item)
+                {
+                    grant.Permanent |= wanted.Value;
+                    continue;
+                }
+                if (!grant.Permanent && grant.Id >= 0 && subject.Equipped(slot, out _) == grant.Id)
+                {
+                    subject.Unequip(slot);
+                    changed = true;
+                }
+                ledger.Items.Remove(slot);
+            }
+            foreach (var pair in chosen)
+            {
+                if (ledger.Items.ContainsKey(pair.Key)) continue;
+                subject.Equipped(pair.Key, out string held);
+                long id = held == pair.Value.Key ? -1 : subject.Equip(pair.Value.Key);
+                if (held != pair.Value.Key && id < 0) continue; // e.g. a cursed item blocks the slot
+                ledger.Items[pair.Key] = new ItemGrant { Item = pair.Value.Key, Id = id, Permanent = pair.Value.Value };
+                changed |= id >= 0;
             }
             return changed;
         }

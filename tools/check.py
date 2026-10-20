@@ -21,7 +21,11 @@ assert metadata["GUID"] == "gaok1.meta_rules"
 assert re.fullmatch(r"\d+\.\d+\.\d+", metadata["version"])
 en = load(ROOT / "Locales/en.json")
 br = load(ROOT / "Locales/br.json")
+# The game has separate Brazilian ("br") and European ("pt") Portuguese; both use the pt-BR text.
+# Any other game language falls back to English through NML.
+pt = load(ROOT / "Locales/pt.json")
 assert en.keys() == br.keys(), "Locale keys differ"
+assert pt == br, "Locales/pt.json must be a copy of Locales/br.json"
 assert all(isinstance(value, str) and value.strip() for value in [*en.values(), *br.values()])
 keys = set()
 for path in (ROOT / "Code").rglob("*.cs"):

@@ -12,38 +12,65 @@ using Object = UnityEngine.Object;
 
 namespace MetaRules.UI
 {
-    // One individual meta, two sections. Controls for a rule live in its editor.
+    // One individual meta in a native-sized window: everything lives in the window's own
+    // scroll view (with its native scrollbar), built from the game's own prefabs.
     public static class RulesWindow
     {
         const string WindowId = "mr_window";
-        const float W = 390f, H = 360f, C = W - 24f;
-        const int Columns = 8, PageSize = 48;
+        // Native window geometry (windows/empty): 240x320 background, 232-wide scroll view.
+        const float CW = 210f, Left = 15f, ViewW = 232f, ViewH = 286.2f, ViewY = -6.5f, ViewTop = 23.4f, PickerInset = 64f;
+        const float Cell = NativeUi.CellSize;
+        const string Red = "ui/special/special_buttonRed", Gray = "ui/special/special_buttonGray", Field = "ui/special/darkInputFieldEmpty";
+        static readonly Color Good = Hex("#8fd16a"), Bad = Hex("#ef7a62");
         static ScrollWindow window;
-        static RectTransform root, pickerResults;
+        static RectTransform root, content, scrollView;
         static MetaHandle selected;
         static MapStats world;
         static Restriction draft;
         static Declaration effect;
         static int selectedCondition = -1;
-        static bool picking, pickingCondition, advanced, settings;
-        static int category, page;
+        static bool picking, pickingCondition, help;
+        static int category;
         static string query = "";
         static Text summaryLabel;
         static int memberCount, incompatibleCount;
         static float nextSummary;
+        static List<Group> results;
 
         sealed class Choice
         {
-            public string Name, Detail;
-            public Sprite Sprite;
-            public MetaHandle Meta;
-            public Action Select;
+            public string Search;
+            public Func<Transform, RectTransform> Create;
+            public RectTransform View;
+        }
+
+        sealed class Group
+        {
+            public string Title;
+            public Color Color = HeaderGold;
+            public bool Banners;
+            public readonly List<Choice> Items = new List<Choice>();
+            public NativeUi.Group View;
         }
 
         public static string T(string key) => LM.Get("mr_" + key);
         public static string KindName(MetaKind value) => T("kind_" + value.ToString().ToLowerInvariant());
-        static string TraitName(string id) => LocalizedTextManager.stringExists("trait_" + id) ? LM.Get("trait_" + id) : id;
+        static string Locale(string key, string fallback) => !string.IsNullOrEmpty(key) && LocalizedTextManager.stringExists(key) ? LocalizedTextManager.getText(key) : fallback;
+        static string TraitName(string id) => Locale("trait_" + id, id);
         static RuleSet Current => WorldRules.Get(selected) ?? new RuleSet();
+
+        static string ItemName(string id)
+        {
+            EquipmentAsset asset = AssetManager.items.get(id);
+            if (asset == null) return id;
+            try { return asset.getTranslatedName(); } catch (Exception) { return id; }
+        }
+
+        static string SlotName(string id)
+        {
+            EquipmentAsset asset = AssetManager.items.get(id);
+            return asset == null ? T("equipment") : T("slot_" + asset.equipment_type.ToString().ToLowerInvariant());
+        }
 
         // Entry points are attached to native meta windows, not a global type browser.
         public static void Init() { }
@@ -66,14 +93,12 @@ namespace MetaRules.UI
             if (window == null) Create();
             ScrollWindow.showWindow(WindowId);
             Build();
-            FitWindow();
         }
 
         static void ResetEditor()
         {
             draft = null; effect = null; selectedCondition = -1;
-            picking = false; advanced = false; settings = false;
-            query = ""; page = 0;
+            picking = false; help = false; query = "";
         }
 
         static void Create()
@@ -81,23 +106,58 @@ namespace MetaRules.UI
             window = WindowCreator.CreateEmptyWindow(WindowId, "mr_title");
             ScrollWindow.finishAnimations();
             Transform bg = window.transform.Find("Background");
-            bg.Find("Scroll View")?.gameObject.SetActive(false);
-            bg.GetComponent<RectTransform>().sizeDelta = new Vector2(W, H);
-            bg.GetComponent<Image>().type = Image.Type.Sliced;
-            Transform close = window.transform.Find("CloseBackground");
-            if (close != null) close.localPosition = new Vector3(W / 2f - 18f, H / 2f + 4f);
-            window.titleText.transform.localPosition = new Vector3(0, H / 2f - 2f);
-            root = Box(bg, 0, 0, W, H, "mr_root");
+
+            // Undo NML's list-window offsets and restore the native scroll view.
+            scrollView = (RectTransform)bg.Find("Scroll View");
+            scrollView.gameObject.SetActive(true);
+            scrollView.anchorMin = scrollView.anchorMax = scrollView.pivot = new Vector2(0.5f, 0.5f);
+            var viewport = (RectTransform)scrollView.Find("Viewport");
+            viewport.anchorMin = Vector2.zero; viewport.anchorMax = Vector2.one; viewport.pivot = new Vector2(0f, 1f);
+            viewport.sizeDelta = Vector2.zero; viewport.anchoredPosition = Vector2.zero;
+            content = (RectTransform)viewport.Find("Content");
+            content.anchorMin = new Vector2(0f, 1f); content.anchorMax = Vector2.one; content.pivot = new Vector2(0f, 1f);
+            VerticalLayoutGroup stack = content.GetComponent<VerticalLayoutGroup>();
+            if (stack == null) stack = content.gameObject.AddComponent<VerticalLayoutGroup>();
+            stack.childAlignment = TextAnchor.UpperCenter;
+            stack.spacing = 4f;
+            stack.padding = new RectOffset(0, 0, 4, 10);
+            stack.childControlWidth = stack.childControlHeight = false;
+            stack.childForceExpandWidth = stack.childForceExpandHeight = false;
+            ContentSizeFitter fitter = content.GetComponent<ContentSizeFitter>();
+            if (fitter == null) fitter = content.gameObject.AddComponent<ContentSizeFitter>();
+            fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            fitter.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
+            scrollView.Find("Scrollbar Horizontal")?.gameObject.SetActive(false);
+
+            // The native vertical scrollbar covers only part of the view in list windows; span it fully.
+            if (scrollView.Find("Scrollbar Vertical Mask") is RectTransform mask)
+            {
+                mask.anchorMin = new Vector2(1f, 0f); mask.anchorMax = Vector2.one; mask.pivot = new Vector2(0.5f, 0.5f);
+                mask.sizeDelta = new Vector2(17.4f, -8f); mask.anchoredPosition = new Vector2(8.7f, 0f);
+                if (mask.Find("Scrollbar Vertical") is RectTransform bar)
+                {
+                    bar.anchorMin = Vector2.zero; bar.anchorMax = Vector2.one;
+                    bar.sizeDelta = new Vector2(-0.2f, 0f); bar.anchoredPosition = Vector2.zero;
+                    if (bar.Find("Background") is RectTransform track)
+                    {
+                        track.anchorMin = new Vector2(0.5f, 0f); track.anchorMax = new Vector2(0.5f, 1f);
+                        track.sizeDelta = new Vector2(36f, 0f); track.anchoredPosition = new Vector2(-4.3f, 0f);
+                    }
+                }
+            }
+
+            // Fixed controls (picker tabs and search) sit above the scroll view.
+            var size = ((RectTransform)bg).sizeDelta;
+            root = Box(bg, 0, 0, size.x, size.y, "mr_root");
             root.anchorMin = root.anchorMax = root.pivot = new Vector2(0.5f, 0.5f);
             root.anchoredPosition = Vector2.zero;
+            root.SetAsLastSibling();
         }
 
-        static void FitWindow()
+        static void SetInset(float top)
         {
-            RectTransform canvas = window.GetComponentInParent<Canvas>()?.transform as RectTransform;
-            if (canvas == null) return;
-            float scale = Mathf.Min(1f, (canvas.rect.width - 80f) / (W + 16f), (canvas.rect.height - 35f) / (H + 20f));
-            window.transform.localScale = new Vector3(Mathf.Max(0.35f, scale), Mathf.Max(0.35f, scale), 1);
+            scrollView.sizeDelta = new Vector2(ViewW, ViewH - top);
+            scrollView.anchoredPosition = new Vector2(0f, ViewY - top / 2f);
         }
 
         static void Clear(Transform parent)
@@ -109,113 +169,155 @@ namespace MetaRules.UI
             }
         }
 
+        static RectTransform Block(float height, string name = "block") => Box(content, 0, 0, CW, height, name);
+
         static void Build()
         {
             if (root == null) return;
             Tooltip.hideTooltip();
             Clear(root);
-            pickerResults = null;
+            Clear(content);
+            results = null;
             summaryLabel = null;
+            SetInset(picking ? PickerInset : 0f);
             if (!ReferenceEquals(world, World.world?.map_stats) || selected == null ||
                 !WorldRules.Metas.Any(m => m.Target == selected.Target && m.Id == selected.Id))
+                Paragraph(Block(80), T("choose_meta"), 0, 10, CW, 70);
+            else if (picking) BuildPicker();
+            else
             {
-                Paragraph(root, T("choose_meta"), 24, 110, W - 48, 70);
-                return;
+                BuildIdentity();
+                if (WorldRules.IsBroken(selected)) Paragraph(Block(90), T("invalid_data"), 0, 0, CW, 90);
+                else if (help) BuildHelp();
+                else if (draft != null) BuildRestrictionEditor();
+                else if (effect != null) BuildDeclarationEditor();
+                else BuildOverview();
             }
-            BuildIdentity();
-            if (WorldRules.IsBroken(selected)) { Paragraph(root, T("invalid_data"), 20, 100, W - 40, 100); return; }
-            RectTransform pane = Box(root, 12, 84, C, 260, "rules_content");
-            if (picking) BuildPicker(pane);
-            else if (settings) BuildSettings(pane);
-            else if (draft != null) BuildRestrictionEditor(pane);
-            else if (effect != null) BuildDeclarationEditor(pane);
-            else BuildOverview(pane);
+            LayoutRebuilder.ForceRebuildLayoutImmediate(content);
+            content.anchoredPosition = Vector2.zero;
         }
 
+        // ── Header: who these rules belong to, how many members, and the master switch.
         static void BuildIdentity()
         {
-            RectTransform emblem = Button(root, 16, 24, 44, 44, null, ReturnToMeta);
-            MetaSymbols.Draw(emblem, selected, 0, 0, 44);
-            MetaSymbols.Tip(emblem, () => selected.Name, () => T("return_meta"));
-            Text(root, Fit(selected.Name, 12, C - 90), 72, 25, C - 90, 22, 12, Ink, TextAnchor.MiddleLeft);
-            Text(root, KindName(selected.Kind) + (Current.Enabled ? "" : " · " + T("paused")), 72, 48, C - 95, 14, 7, Muted, TextAnchor.MiddleLeft);
-            Small(root, "…", W - 38, 47, 21, () => { ResetEditor(); settings = true; Build(); }, T("options"));
-        }
-
-        static void ReturnToMeta()
-        {
-            NativeMetaWindows.OpenNative(selected);
-        }
-
-        static RectTransform Section(RectTransform pane, string title, float y, Action add)
-        {
-            RectTransform card = Sliced(pane, Slot, 0, y, C, 112);
-            Text(card, title, 12, 4, C - 52, 20, 10, HeaderGold, TextAnchor.MiddleLeft);
-            Rect(card, 10, 26, C - 20, 1, Line);
-            Small(card, "+", C - 33, 4, 23, add, title);
-            return card;
-        }
-
-        static void BuildOverview(RectTransform pane)
-        {
             RuleSet set = Current;
-            RectTransform declarations = Section(pane, T("declarations"), 0, () =>
-            { effect = new Declaration(); StartPicker(false); });
-            RectTransform requirements = Section(pane, T("requirements"), 124, () =>
-            { draft = new Restriction(); StartPicker(true); });
-
-            if (set.Declarations.Count == 0) Empty(declarations, T("no_declarations"));
-            else
-            {
-                float rows = (set.Declarations.Count + Columns - 1) / Columns;
-                RectTransform grid = Scroll(declarations, "declarations", 11, 32, C - 22, 72, rows * 38);
-                for (int i = 0; i < set.Declarations.Count; i++)
-                {
-                    Declaration item = set.Declarations[i];
-                    RectTransform token = Symbol(grid, i % Columns * 43, i / Columns * 38, 32,
-                        item.Kind == EffectKind.Trait ? MetaSymbols.TraitSprite(item.Value) : MetaSymbols.StatSprite(item.Value), null,
-                        () => { effect = Clone(item); Build(); }, DeclarationName(item),
-                        T(item.Kind == EffectKind.Stat || item.Lifetime == Lifetime.Membership ? "while_member" : "permanent"));
-                    if (!item.Enabled || !set.Enabled) Fade(token);
-                    if (item.Kind == EffectKind.Stat) Badge(token, Number(item.Amount));
-                    else if (item.Lifetime == Lifetime.Permanent) Rect(token, 25, 3, 4, 4, Gold);
-                }
-            }
-            if (set.Restrictions.Count == 0) Empty(requirements, T("no_requirements"));
-            else
-            {
-                RectTransform list = Scroll(requirements, "requirements", 11, 32, C - 22, 72, set.Restrictions.Count * 37);
-                for (int i = 0; i < set.Restrictions.Count; i++)
-                {
-                    Restriction item = set.Restrictions[i];
-                    RectTransform row = Button(list, 0, i * 37, C - 22, 33, Slot,
-                        () => { draft = Clone(item); selectedCondition = -1; Build(); });
-                    int shown = Math.Min(item.Conditions.Count, 7);
-                    for (int j = 0; j < shown; j++) DrawCondition(row, item.Conditions[j], 5 + j * 43, 3, 27);
-                    if (item.Conditions.Count > shown) Text(row, "+" + (item.Conditions.Count - shown), C - 52, 5, 25, 22, 8, Muted, TextAnchor.MiddleCenter);
-                    MetaSymbols.Tip(row, () => T(item.Any ? "any" : "all"), () => string.Join("\n", item.Conditions.Select(Describe)));
-                    if (!item.Enabled || !set.Enabled) Fade(row);
-                }
-            }
-            RectTransform summary = Button(pane, 2, 243, C - 4, 15, null, () => { });
-            summaryLabel = Text(summary, "", 0, 0, C - 4, 15, 7, Muted, TextAnchor.MiddleCenter).GetComponent<Text>();
+            RectTransform block = Block(48, "identity");
+            RectTransform banner = NativeUi.Banner(block, selected, 40, ReturnToMeta);
+            banner.anchoredPosition = new Vector2(0, -4);
+            Text(block, Fit(selected.Name, 10, CW - 48), 46, 1, CW - 46, 16, 10, Ink, TextAnchor.MiddleLeft);
+            summaryLabel = Text(block, "", 46, 16, CW - 46, 12, 7, Muted, TextAnchor.MiddleLeft).GetComponent<Text>();
+            RectTransform hover = Button(block, 46, 16, CW - 46, 12, null, () => { });
+            MetaSymbols.Tip(hover, () => T("members") + ": " + memberCount,
+                () => T("violations") + ": " + incompatibleCount + "\n\n" + T("admission_help") +
+                    (selected.Kind == MetaKind.Subspecies ? "\n\n" + T("subspecies_help") : ""));
             UpdateSummary();
-            MetaSymbols.Tip(summary, () => T("members") + ": " + memberCount,
-                () => T("violations") + ": " + incompatibleCount + "\n" + T("admission_help") +
-                    (selected.Kind == MetaKind.Subspecies ? "\n" + T("subspecies_help") : ""));
+
+            RectTransform toggle = Button(block, 46, 30, 90, 17, Gray, () => { set.Enabled = !set.Enabled; Save(set); });
+            Text(toggle, "● " + T(set.Enabled ? "active" : "paused"), 2, 0, 86, 17, 7, set.Enabled ? Good : Bad, TextAnchor.MiddleCenter);
+            MetaSymbols.Tip(toggle, () => T(set.Enabled ? "rules_on" : "rules_off"), () => T("toggle_rules"));
+            Small(block, "?", CW - 18, 30, 18, () => { ResetEditor(); help = true; Build(); }, T("help"));
         }
+
+        static void ReturnToMeta() => NativeMetaWindows.OpenNative(selected);
 
         static void UpdateSummary()
         {
+            if (summaryLabel == null) return;
             memberCount = WorldRules.MemberCount(selected, out incompatibleCount);
-            summaryLabel.text = memberCount + " " + T("members").ToLowerInvariant() +
-                (incompatibleCount > 0 ? " · " + incompatibleCount + " " + T("incompatible") : "");
+            summaryLabel.text = KindName(selected.Kind) + " · " + memberCount + " " + T("members").ToLowerInvariant() +
+                (incompatibleCount > 0 ? " · <color=" + Tag(Bad) + ">" + incompatibleCount + " " + T("incompatible") + "</color>" : "");
         }
 
-        static void Empty(RectTransform card, string message) => Text(card, message, 12, 45, C - 24, 30, 8, Muted, TextAnchor.MiddleCenter);
-        static void Fade(RectTransform target) => target.gameObject.AddComponent<CanvasGroup>().alpha = 0.4f;
+        // ── Overview
+        static NativeUi.Group Section(string title, int count)
+        {
+            NativeUi.Group group = NativeUi.CreateGroup(content, title, HeaderGold);
+            if (group.Counter != null) group.Counter.text = count.ToString();
+            return group;
+        }
+
+        static void BuildOverview()
+        {
+            RuleSet set = Current;
+            NativeUi.Group declarations = Section(T("declarations"), set.Declarations.Count);
+            foreach (Declaration value in set.Declarations)
+            {
+                Declaration item = value;
+                RectTransform token = DeclarationToken(declarations.Grid, item, () => { effect = Clone(item); Build(); }, false);
+                if (!item.Enabled || !set.Enabled) Fade(token);
+                if (item.Kind == EffectKind.Stat) Badge(token, Number(item.Amount));
+                else if (item.Lifetime == Lifetime.Permanent) Corner(token, Gold);
+            }
+            Small(declarations.Grid, "+", 0, 0, Cell, () => { effect = new Declaration(); StartPicker(false); }, T("add_declaration"));
+            if (set.Declarations.Count == 0) Hint(T("no_declarations") + " — " + T("declarations_hint"));
+
+            Section(T("requirements"), set.Restrictions.Count);
+            foreach (Restriction value in set.Restrictions)
+            {
+                Restriction item = value;
+                RectTransform row = Button(Block(24, "requirement"), 0, 0, CW, 24, Slot, () => { draft = Clone(item); selectedCondition = -1; Build(); });
+                Text(row, T(item.Any ? "any_short" : "all_short"), 2, 0, 32, 24, 6, Gold, TextAnchor.MiddleCenter);
+                int fit = (int)((CW - 36 - (item.Enabled ? 4 : 44)) / 20);
+                int shown = Math.Min(item.Conditions.Count, item.Conditions.Count > fit ? fit - 1 : fit);
+                for (int j = 0; j < shown; j++) DrawCondition(row, item.Conditions[j], 36 + j * 20, 3, 18);
+                if (item.Conditions.Count > shown) Text(row, "+" + (item.Conditions.Count - shown), 36 + shown * 20, 0, 20, 24, 7, Muted, TextAnchor.MiddleCenter);
+                if (!item.Enabled) Text(row, T("disabled"), CW - 44, 0, 42, 24, 6, Bad, TextAnchor.MiddleCenter);
+                MetaSymbols.Tip(row, () => T(item.Any ? "any" : "all"), () => string.Join("\n", item.Conditions.Select(Describe)));
+                if (!item.Enabled || !set.Enabled) Fade(row);
+            }
+            Label(Block(18), "+  " + T("add_requirement"), 0, 0, CW, 18, () => { draft = new Restriction(); StartPicker(true); });
+            if (set.Restrictions.Count == 0) Hint(T("no_requirements") + " — " + T("requirements_hint"));
+        }
+
+        static RectTransform DeclarationToken(Transform parent, Declaration d, Action click, bool marked)
+        {
+            RectTransform token = null;
+            if (d.Kind == EffectKind.Trait && AssetManager.traits.get(d.Value) is ActorTrait trait)
+                token = NativeUi.TraitButton(parent, trait, marked, click);
+            else if (d.Kind == EffectKind.Item && AssetManager.items.get(d.Value) is EquipmentAsset item)
+                token = NativeUi.ItemButton(parent, item, marked, click);
+            return token ?? Symbol(parent, 0, 0, Cell, DeclarationSprite(d), null, click, DeclarationName(d), KindLabel(d));
+        }
+
+        static void Fade(RectTransform target)
+        {
+            CanvasGroup group = target.GetComponent<CanvasGroup>();
+            if (group == null) group = target.gameObject.AddComponent<CanvasGroup>();
+            group.alpha = 0.4f;
+        }
+
         static string Number(float n) => n.ToString("+0.##;-0.##;0", CultureInfo.InvariantCulture);
-        static string DeclarationName(Declaration d) => d.Kind == EffectKind.Trait ? TraitName(d.Value) : T("stat_" + d.Value) + " " + Number(d.Amount);
+
+        static Sprite DeclarationSprite(Declaration d)
+        {
+            switch (d.Kind)
+            {
+                case EffectKind.Trait: return MetaSymbols.TraitSprite(d.Value);
+                case EffectKind.Item: return MetaSymbols.ItemSprite(d.Value);
+                default: return MetaSymbols.StatSprite(d.Value);
+            }
+        }
+
+        static string DeclarationName(Declaration d)
+        {
+            switch (d.Kind)
+            {
+                case EffectKind.Trait: return TraitName(d.Value);
+                case EffectKind.Item: return ItemName(d.Value);
+                default: return T("stat_" + d.Value) + " " + Number(d.Amount);
+            }
+        }
+
+        static string KindLabel(Declaration d)
+        {
+            switch (d.Kind)
+            {
+                case EffectKind.Trait: return T("trait");
+                case EffectKind.Item: return T("equipment") + " · " + SlotName(d.Value);
+                default: return T("stat");
+            }
+        }
+
         static Declaration Clone(Declaration d) => new Declaration { Id = d.Id, Enabled = d.Enabled, Kind = d.Kind, Value = d.Value, Amount = d.Amount, Lifetime = d.Lifetime };
         static Restriction Clone(Restriction r) => new Restriction
         {
@@ -228,108 +330,156 @@ namespace MetaRules.UI
 
         static void DrawCondition(Transform parent, Condition c, float x, float y, float size)
         {
-            if (c.Kind == ConditionKind.Trait) Picture(parent, MetaSymbols.TraitSprite(c.Trait), x + 2, y + 2, size - 4, size - 4);
-            else if (Referenced(c) is MetaHandle meta) MetaSymbols.Draw(parent, meta, x + 2, y + 2, size - 4);
-            else Picture(parent, MetaSymbols.KindSprite(c.Meta), x + 2, y + 2, size - 4, size - 4);
+            if (c.Kind == ConditionKind.Trait) Picture(parent, MetaSymbols.TraitSprite(c.Trait), x + 1, y + 1, size - 2, size - 2);
+            else if (Referenced(c) is MetaHandle meta) MetaSymbols.Draw(parent, meta, x, y, size);
+            else Picture(parent, MetaSymbols.KindSprite(c.Meta), x + 1, y + 1, size - 2, size - 2);
             if (c.Negated)
             {
-                RectTransform slash = Rect(parent, x + 2, y + size / 2, size - 4, 2, Hex("#dc6a58"));
+                RectTransform slash = Rect(parent, x, y + size / 2, size * 1.2f, 2, Bad);
                 slash.pivot = new Vector2(0.5f, 0.5f);
                 slash.anchoredPosition = new Vector2(x + size / 2, -(y + size / 2));
                 slash.localRotation = Quaternion.Euler(0, 0, 45);
             }
         }
 
-        static void EditorHeader(RectTransform pane, string title, Action back)
+        // ── Editors
+        static void EditorHeader(Transform parent, string title, Action back)
         {
-            Small(pane, "‹", 0, 0, 22, back, T("back"));
-            Text(pane, title, 30, 0, C - 62, 23, 9, Gold, TextAnchor.MiddleCenter);
+            Small(parent, "‹", 0, 0, 18, back, T("back"));
+            Text(parent, Fit(title, 9, CW - 24), 24, 0, CW - 24, 18, 9, HeaderGold, TextAnchor.MiddleLeft);
         }
 
-        static void BuildDeclarationEditor(RectTransform pane)
+        static void Row(Transform parent, string label, float y) =>
+            Text(parent, Fit(label, 7, 58), 0, y, 60, 18, 7, Muted, TextAnchor.MiddleLeft);
+
+        static void BuildDeclarationEditor()
         {
-            EditorHeader(pane, T("declaration"), () => { effect = null; advanced = false; Build(); });
-            Small(pane, "…", C - 22, 0, 22, () => { advanced = !advanced; Build(); }, T("options"));
-            Symbol(pane, C / 2 - 24, 35, 48, effect.Kind == EffectKind.Trait ? MetaSymbols.TraitSprite(effect.Value) : MetaSymbols.StatSprite(effect.Value), null,
-                () => StartPicker(false), DeclarationName(effect), T("change_selection"));
-            Text(pane, Fit(effect.Kind == EffectKind.Trait ? TraitName(effect.Value) : T("stat_" + effect.Value), 10, C - 20), 10, 92, C - 20, 22, 10, Ink, TextAnchor.MiddleCenter);
-            if (effect.Kind == EffectKind.Trait)
+            bool exists = Current.Declarations.Any(d => d.Id == effect.Id);
+            RectTransform block = Block(144, "declaration");
+            EditorHeader(block, T(exists ? "declaration" : "add_declaration"), () => { effect = null; Build(); });
+
+            RectTransform card = Sliced(block, Slot, 0, 22, CW, 38);
+            RectTransform preview = DeclarationToken(card, effect, () => StartPicker(false), false);
+            preview.anchorMin = preview.anchorMax = new Vector2(0f, 1f);
+            preview.pivot = new Vector2(0.5f, 0.5f);
+            preview.anchoredPosition = new Vector2(5 + Cell / 2, -19);
+            string title = effect.Kind == EffectKind.Stat ? T("stat_" + effect.Value) : DeclarationName(effect);
+            Text(card, Fit(title, 8, CW - 104), 38, 5, CW - 104, 14, 8, Ink, TextAnchor.MiddleLeft);
+            Text(card, Fit(KindLabel(effect), 6, CW - 104), 38, 20, CW - 104, 12, 6, Muted, TextAnchor.MiddleLeft);
+            Label(card, T("change"), CW - 62, 10, 56, 18, () => StartPicker(false));
+
+            const float x = 62f, w = CW - x;
+            if (effect.Kind == EffectKind.Stat)
             {
-                Label(pane, T(effect.Lifetime == Lifetime.Membership ? "while_member" : "permanent"), 40, 130, C - 80, 24,
-                    () => { effect.Lifetime = effect.Lifetime == Lifetime.Membership ? Lifetime.Permanent : Lifetime.Membership; Build(); });
-            }
-            else
-            {
-                Input(pane, effect.Amount.ToString(CultureInfo.InvariantCulture), T("amount"), 85, 130, C - 170, value =>
+                Row(block, T("amount"), 66);
+                float step = 26f, input = w - 4 * step;
+                Step(block, "-10", x, 66, -10); Step(block, "-1", x + step, 66, -1);
+                Input(block, effect.Amount.ToString(CultureInfo.InvariantCulture), T("amount"), x + 2 * step, 66, input - 2, 18, value =>
                 {
                     if (float.TryParse(value.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out float amount) && !float.IsNaN(amount) && !float.IsInfinity(amount))
                         effect.Amount = Mathf.Clamp(amount, -9999, 9999);
                 });
+                Step(block, "+1", x + 2 * step + input, 66, 1); Step(block, "+10", x + 3 * step + input, 66, 10);
             }
-            if (advanced) Label(pane, T(effect.Enabled ? "rule_on" : "rule_off"), 40, 166, C - 80, 21, () => { effect.Enabled = !effect.Enabled; Build(); });
-            Footer(pane, () =>
+            else
+            {
+                Row(block, T("duration"), 66);
+                Segment(block, x, 66, w, new[] { T("while_member"), T("permanent") }, effect.Lifetime == Lifetime.Permanent ? 1 : 0,
+                    i => effect.Lifetime = i == 1 ? Lifetime.Permanent : Lifetime.Membership);
+            }
+            Row(block, T("status"), 88);
+            Segment(block, x, 88, w, new[] { T("enabled"), T("disabled") }, effect.Enabled ? 0 : 1, i => effect.Enabled = i == 0);
+            Footer(block, 120, () =>
             {
                 if (string.IsNullOrEmpty(effect.Value)) return;
                 RuleSet set = Current;
                 int index = set.Declarations.FindIndex(d => d.Id == effect.Id);
                 if (index < 0) set.Declarations.Add(effect); else set.Declarations[index] = effect;
                 effect = null; Save(set);
-            }, Current.Declarations.Any(d => d.Id == effect.Id) ? (Action)(() =>
+            }, () => { effect = null; Build(); }, exists ? (Action)(() =>
             { RuleSet set = Current; set.Declarations.RemoveAll(d => d.Id == effect.Id); effect = null; Save(set); }) : null);
+
+            string helpText = effect.Kind == EffectKind.Trait ? "trait_help" : effect.Kind == EffectKind.Item ? "item_help" : "stat_help";
+            HelpBlock(T(helpText));
         }
 
-        static void BuildRestrictionEditor(RectTransform pane)
+        static void Step(Transform parent, string text, float x, float y, float delta) =>
+            Label(parent, text, x, y, 24, 18, () => { effect.Amount = Mathf.Clamp(effect.Amount + delta, -9999, 9999); Build(); });
+
+        static void BuildRestrictionEditor()
         {
-            EditorHeader(pane, T("requirement"), () => { draft = null; advanced = false; Build(); });
-            Small(pane, "…", C - 22, 0, 22, () => { selectedCondition = -1; advanced = !advanced; Build(); }, T("options"));
-            RectTransform card = Sliced(pane, Slot, 0, 34, C, 100);
-            int cells = draft.Conditions.Count + 1;
-            RectTransform grid = Scroll(card, "conditions", 10, 10, C - 20, 80, ((cells + Columns - 1) / Columns) * 38);
+            bool exists = Current.Restrictions.Any(r => r.Id == draft.Id);
+            RectTransform head = Block(66, "requirement");
+            EditorHeader(head, T(exists ? "requirement" : "add_requirement"), () => { draft = null; Build(); });
+            const float x = 62f, w = CW - x;
+            Row(head, T("match"), 24);
+            Segment(head, x, 24, w, new[] { T("all_short"), T("any_short") }, draft.Any ? 1 : 0, i => draft.Any = i == 1);
+            Row(head, T("status"), 46);
+            Segment(head, x, 46, w, new[] { T("enabled"), T("disabled") }, draft.Enabled ? 0 : 1, i => draft.Enabled = i == 0);
+
+            NativeUi.Group conditions = NativeUi.CreateGroup(content, T("conditions"), HeaderGold);
+            if (conditions.Counter != null) conditions.Counter.text = draft.Conditions.Count.ToString();
             for (int i = 0; i < draft.Conditions.Count; i++)
             {
                 int index = i; Condition condition = draft.Conditions[i];
-                RectTransform token = Button(grid, i % Columns * 43, i / Columns * 38, 32, 32, Slot, () => { selectedCondition = index; Build(); });
-                DrawCondition(token, condition, 0, 0, 32);
+                RectTransform token = Button(conditions.Grid, 0, 0, Cell, Cell, Slot, () =>
+                { selectedCondition = selectedCondition == index ? -1 : index; Build(); });
+                DrawCondition(token, condition, 3, 3, Cell - 6);
                 MetaSymbols.Tip(token, () => Describe(condition));
                 if (selectedCondition == index) Frame(token, 0);
             }
-            int count = draft.Conditions.Count;
-            Small(grid, "+", count % Columns * 43, count / Columns * 38, 32, () => StartPicker(true), T("add_condition"));
+            Small(conditions.Grid, "+", 0, 0, Cell, () => StartPicker(true), T("add_condition"));
+
             if (selectedCondition >= 0 && selectedCondition < draft.Conditions.Count)
             {
                 Condition condition = draft.Conditions[selectedCondition];
-                Text(pane, Fit(Describe(condition), 8, C - 20), 10, 145, C - 20, 20, 8, Ink, TextAnchor.MiddleCenter);
-                Label(pane, T("invert_condition"), 20, 171, 155, 21, () => { condition.Negated = !condition.Negated; Build(); });
-                Label(pane, T("remove"), 191, 171, 155, 21, () => { draft.Conditions.RemoveAt(selectedCondition); selectedCondition = -1; Build(); });
+                RectTransform row = Block(40, "condition");
+                Text(row, Fit(Describe(condition), 7, CW), 0, 0, CW, 16, 7, Ink, TextAnchor.MiddleCenter);
+                Label(row, T("invert_condition"), 0, 20, CW / 2 - 2, 18, () => { condition.Negated = !condition.Negated; Build(); });
+                Label(row, T("remove"), CW / 2 + 2, 20, CW / 2 - 2, 18, () => { draft.Conditions.RemoveAt(selectedCondition); selectedCondition = -1; Build(); }, Red);
             }
-            else if (advanced)
-            {
-                Label(pane, T(draft.Any ? "any" : "all"), 20, 150, C - 40, 22, () => { draft.Any = !draft.Any; Build(); });
-                Label(pane, T(draft.Enabled ? "rule_on" : "rule_off"), 20, 180, C - 40, 21, () => { draft.Enabled = !draft.Enabled; Build(); });
-            }
-            Footer(pane, () =>
+            else Hint(T(draft.Conditions.Count == 0 ? "first_condition" : "select_condition"));
+
+            Footer(Block(20, "footer"), 0, () =>
             {
                 if (draft.Conditions.Count == 0) return;
                 RuleSet set = Current;
                 int index = set.Restrictions.FindIndex(r => r.Id == draft.Id);
                 if (index < 0) set.Restrictions.Add(draft); else set.Restrictions[index] = draft;
                 draft = null; Save(set);
-            }, Current.Restrictions.Any(r => r.Id == draft.Id) ? (Action)(() =>
+            }, () => { draft = null; Build(); }, exists ? (Action)(() =>
             { RuleSet set = Current; set.Restrictions.RemoveAll(r => r.Id == draft.Id); draft = null; Save(set); }) : null);
         }
 
-        static void BuildSettings(RectTransform pane)
+        static void BuildHelp()
         {
-            EditorHeader(pane, T("options"), () => { settings = false; Build(); });
-            RuleSet set = Current;
-            Label(pane, T(set.Enabled ? "rules_on" : "rules_off"), 35, 50, C - 70, 26, () => { set.Enabled = !set.Enabled; Save(set); });
-            Paragraph(pane, T("provenance_help"), 20, 103, C - 40, 65);
-            Paragraph(pane, T("admission_help"), 20, 174, C - 40, 65);
+            EditorHeader(Block(18, "help"), T("help"), () => { help = false; Build(); });
+            var parts = new List<string> { T("admission_help"), T("trait_help"), T("item_help"), T("stat_help"), T("provenance_help") };
+            if (selected.Kind == MetaKind.Subspecies) parts.Add(T("subspecies_help"));
+            foreach (string part in parts) HelpBlock(part);
         }
 
+        // A wrapped paragraph whose block grows to fit its text.
+        static void HelpBlock(string text)
+        {
+            RectTransform block = Block(10, "paragraph");
+            Text label = Paragraph(block, text, 2, 0, CW - 4, 10, 7, TextAnchor.UpperLeft);
+            float height = Mathf.Ceil(label.preferredHeight) + 2;
+            block.sizeDelta = new Vector2(CW, height);
+            ((RectTransform)label.transform).sizeDelta = new Vector2(CW - 4, height);
+        }
+
+        static RectTransform Hint(string text)
+        {
+            RectTransform block = Block(24, "hint");
+            Paragraph(block, text, 4, 0, CW - 8, 24, 6, TextAnchor.UpperCenter);
+            return block;
+        }
+
+        // ── Picker: native groups, native order, one continuous scroll.
         static void StartPicker(bool forCondition)
         {
-            picking = true; pickingCondition = forCondition; category = 0; query = ""; page = 0;
+            picking = true; pickingCondition = forCondition; category = 0; query = "";
             Build();
         }
 
@@ -341,110 +491,259 @@ namespace MetaRules.UI
             Build();
         }
 
-        static void BuildPicker(RectTransform pane)
+        static void BuildPicker()
         {
-            EditorHeader(pane, T(pickingCondition ? "add_requirement" : "add_declaration"), LeavePicker);
-            int filters = pickingCondition ? 10 : 2;
-            for (int i = 0; i < filters; i++)
+            float y = ViewTop + 2f;
+            string title = T(pickingCondition ? "add_condition" : effect != null && !string.IsNullOrEmpty(effect.Value) ? "change_selection" : "add_declaration");
+            Small(root, "‹", Left, y, 16, LeavePicker, T("back"));
+            Text(root, Fit(title, 8, CW - 22), Left + 22, y, CW - 22, 16, 8, HeaderGold, TextAnchor.MiddleLeft);
+            y += 19f;
+            if (pickingCondition)
             {
-                int filter = i;
-                Sprite icon = i == 0 ? MetaSymbols.TraitSprite("strong") :
-                    pickingCondition ? MetaSymbols.KindSprite((MetaKind)(i - 1)) : MetaSymbols.StatSprite("damage");
-                string label = i == 0 ? T("trait") : pickingCondition ? KindName((MetaKind)(i - 1)) : T("stat");
-                RectTransform token = Symbol(pane, i * 35, 31, 29, icon, null,
-                    () => { category = filter; query = ""; page = 0; Build(); }, label);
-                if (category == i) Frame(token, 0);
-            }
-            Input(pane, query, T("search_live"), 0, 68, C, value => { query = value; page = 0; BuildPickerResults(); });
-            pickerResults = Box(pane, 0, 96, C, 164, "picker_results");
-            BuildPickerResults();
-        }
-
-        static void BuildPickerResults()
-        {
-            if (pickerResults == null) return;
-            Clear(pickerResults);
-            var choices = new List<Choice>();
-            if (category == 0)
-            {
-                foreach (ActorTrait trait in AssetManager.traits.list)
+                // Trait plus one tab per meta type: icons only, named in tooltips.
+                const int tabs = 10;
+                float tab = (CW - (tabs - 1) * 2f) / tabs;
+                for (int i = 0; i < tabs; i++)
                 {
-                    ActorTrait entry = trait;
-                    string name = TraitName(entry.id);
-                    if (!Matches(name + " " + entry.id, query)) continue;
-                    choices.Add(new Choice { Name = name, Detail = entry.id, Sprite = entry.getSprite(), Select = () =>
-                    {
-                        if (pickingCondition) { draft.Conditions.Add(new Condition { Trait = entry.id }); selectedCondition = -1; }
-                        else { effect.Kind = EffectKind.Trait; effect.Value = entry.id; }
-                        picking = false; Build();
-                    }});
-                }
-            }
-            else if (pickingCondition)
-            {
-                MetaKind type = (MetaKind)(category - 1);
-                foreach (MetaHandle value in WorldRules.Metas)
-                {
-                    MetaHandle meta = value;
-                    if (meta.Kind != type || !Matches(meta.Name, query)) continue;
-                    choices.Add(new Choice { Name = meta.Name, Detail = KindName(meta.Kind), Meta = meta, Select = () =>
-                    {
-                        draft.Conditions.Add(new Condition { Kind = ConditionKind.Membership, Meta = meta.Kind, MetaId = meta.Id });
-                        selectedCondition = -1; picking = false; Build();
-                    }});
+                    int filter = i;
+                    Sprite icon = i == 0 ? MetaSymbols.TraitSprite("strong") : MetaSymbols.KindSprite((MetaKind)(i - 1));
+                    string label = i == 0 ? T("traits") : KindName((MetaKind)(i - 1));
+                    RectTransform token = Symbol(root, Left + i * (tab + 2f), y, tab, icon, null, () => SelectTab(filter), label);
+                    if (category == i) Frame(token, 0);
                 }
             }
             else
             {
-                foreach (string value in WorldRules.AllowedStats)
+                string[] names = { T("traits"), T("equipment"), T("stats") };
+                Sprite[] icons = { MetaSymbols.TraitSprite("strong"), MetaSymbols.EquipmentSprite(), MetaSymbols.StatSprite("damage") };
+                float tab = (CW - 2 * 2f) / 3f;
+                for (int i = 0; i < 3; i++)
                 {
-                    string stat = value;
-                    if (!Matches(T("stat_" + stat), query)) continue;
-                    choices.Add(new Choice { Name = T("stat_" + stat), Detail = T("stat"), Sprite = MetaSymbols.StatSprite(stat), Select = () =>
-                    { effect.Kind = EffectKind.Stat; effect.Value = stat; if (effect.Amount == 0) effect.Amount = 10; picking = false; Build(); }});
+                    int filter = i;
+                    RectTransform token = Button(root, Left + i * (tab + 2f), y, tab, 20, Slot, () => SelectTab(filter));
+                    Picture(token, icons[i], 4, 3, 14, 14);
+                    Text(token, Fit(names[i], 7, tab - 22), 20, 0, tab - 22, 20, 7, category == i ? Gold : Muted, TextAnchor.MiddleLeft);
+                    if (category == i) Frame(token, 0);
                 }
             }
-            choices.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase));
-            int pages = Math.Max(1, (choices.Count + PageSize - 1) / PageSize);
-            page = Math.Min(page, pages - 1);
-            var visible = choices.Skip(page * PageSize).Take(PageSize).ToList();
-            RectTransform grid = Scroll(pickerResults, "symbols", 0, 0, C, 136, ((visible.Count + Columns - 1) / Columns) * 43);
-            for (int i = 0; i < visible.Count; i++)
+            y += 23f;
+            Input(root, query, T("search_live"), Left, y, CW, 17, value => { query = value; Relayout(); });
+            BuildResults();
+        }
+
+        static void SelectTab(int value)
+        {
+            if (category == value) return;
+            category = value; query = "";
+            Build();
+        }
+
+        static void BuildResults()
+        {
+            results = Choices();
+            foreach (Group group in results)
             {
-                Choice entry = visible[i];
-                Symbol(grid, 6 + i % Columns * 45, i / Columns * 43, 37, entry.Sprite, entry.Meta, entry.Select, entry.Name, entry.Detail);
+                group.View = NativeUi.CreateGroup(content, group.Title, group.Color);
+                if (group.Banners && group.View.Grid.GetComponent<GridLayoutGroup>() is GridLayoutGroup grid)
+                {
+                    grid.constraint = GridLayoutGroup.Constraint.Flexible;
+                    grid.cellSize = new Vector2(34f, 40f);
+                }
+                foreach (Choice entry in group.Items) entry.View = entry.Create(group.View.Grid);
             }
-            if (visible.Count == 0) Text(pickerResults, T("no_results"), 0, 45, C, 30, 8, Muted, TextAnchor.MiddleCenter);
-            if (pages > 1)
+            Hint(T("no_results")).name = "no_results";
+            Relayout();
+        }
+
+        static void Relayout()
+        {
+            if (results == null) return;
+            int total = 0;
+            foreach (Group group in results)
             {
-                Small(pickerResults, "‹", C / 2 - 65, 140, 22, () => { page = Math.Max(0, page - 1); BuildPickerResults(); }, T("back"));
-                Text(pickerResults, (page + 1) + " / " + pages, C / 2 - 35, 140, 70, 22, 7, Muted, TextAnchor.MiddleCenter);
-                Small(pickerResults, "›", C / 2 + 43, 140, 22, () => { page = Math.Min(pages - 1, page + 1); BuildPickerResults(); }, T("next"));
+                int shown = 0;
+                foreach (Choice entry in group.Items)
+                {
+                    bool visible = Matches(entry.Search, query);
+                    entry.View.gameObject.SetActive(visible);
+                    if (visible) shown++;
+                }
+                group.View.Root.gameObject.SetActive(shown > 0);
+                if (group.View.Counter != null) group.View.Counter.text = shown.ToString();
+                total += shown;
             }
+            content.Find("no_results")?.gameObject.SetActive(total == 0);
+            LayoutRebuilder.ForceRebuildLayoutImmediate(content);
+            content.anchoredPosition = Vector2.zero;
+        }
+
+        static List<Group> Choices()
+        {
+            if (pickingCondition && category > 0) return MetaChoices((MetaKind)(category - 1));
+            if (category == 0) return TraitChoices();
+            if (category == 1) return ItemChoices();
+            return StatChoices();
+        }
+
+        // Same order as the native trait editor: by group, then priority, then id.
+        static List<Group> TraitChoices()
+        {
+            var used = new HashSet<string>(pickingCondition
+                ? draft.Conditions.Where(c => c.Kind == ConditionKind.Trait).Select(c => c.Trait)
+                : Current.Declarations.Where(d => d.Kind == EffectKind.Trait).Select(d => d.Value));
+            var groups = new List<Group>();
+            var byId = new Dictionary<string, Group>();
+            foreach (ActorTraitGroupAsset asset in AssetManager.trait_groups.list)
+            {
+                var group = new Group { Title = Locale(asset.getLocaleID(), asset.id), Color = GroupColor(asset) };
+                groups.Add(group);
+                byId[asset.id] = group;
+            }
+            var other = new Group { Title = T("other") };
+            var traits = new List<ActorTrait>(AssetManager.traits.list);
+            traits.Sort((a, b) =>
+            {
+                int order = b.priority.CompareTo(a.priority);
+                return order != 0 ? order : StringComparer.Ordinal.Compare(a.id, b.id);
+            });
+            foreach (ActorTrait trait in traits)
+            {
+                ActorTrait entry = trait;
+                Group group = entry.group_id != null && byId.TryGetValue(entry.group_id, out Group known) ? known : other;
+                string name = TraitName(entry.id);
+                bool marked = used.Contains(entry.id);
+                Action select = () =>
+                {
+                    if (pickingCondition) { draft.Conditions.Add(new Condition { Trait = entry.id }); selectedCondition = -1; }
+                    else SetEffect(EffectKind.Trait, entry.id);
+                    picking = false; Build();
+                };
+                group.Items.Add(new Choice
+                {
+                    Search = name + " " + entry.id,
+                    Create = grid => NativeUi.TraitButton(grid, entry, marked, select)
+                        ?? Marked(Symbol(grid, 0, 0, Cell, entry.getSprite(), null, select, name, group.Title), marked)
+                });
+            }
+            groups.Add(other);
+            return groups;
+        }
+
+        // Same order as the native equipment editor: by item group, then library order.
+        static List<Group> ItemChoices()
+        {
+            var used = new HashSet<string>(Current.Declarations.Where(d => d.Kind == EffectKind.Item).Select(d => d.Value));
+            var groups = new List<Group>();
+            var byId = new Dictionary<string, Group>();
+            foreach (ItemGroupAsset asset in AssetManager.item_groups.list)
+            {
+                var group = new Group { Title = Locale(asset.getLocaleID(), asset.id), Color = GroupColor(asset) };
+                groups.Add(group);
+                byId[asset.id] = group;
+            }
+            var other = new Group { Title = T("other") };
+            foreach (EquipmentAsset item in AssetManager.items.list)
+            {
+                if (!item.show_in_meta_editor || !item.can_be_given) continue;
+                EquipmentAsset entry = item;
+                Group group = entry.group_id != null && byId.TryGetValue(entry.group_id, out Group known) ? known : other;
+                string name = ItemName(entry.id);
+                bool marked = used.Contains(entry.id);
+                Action select = () => { SetEffect(EffectKind.Item, entry.id); picking = false; Build(); };
+                group.Items.Add(new Choice
+                {
+                    Search = name + " " + entry.id,
+                    Create = grid => NativeUi.ItemButton(grid, entry, marked, select)
+                        ?? Marked(Symbol(grid, 0, 0, Cell, entry.getSprite(), null, select, name, SlotName(entry.id)), marked)
+                });
+            }
+            groups.Add(other);
+            return groups;
+        }
+
+        static List<Group> StatChoices()
+        {
+            var used = new HashSet<string>(Current.Declarations.Where(d => d.Kind == EffectKind.Stat).Select(d => d.Value));
+            var group = new Group { Title = T("stats") };
+            foreach (string value in WorldRules.Stats)
+            {
+                string stat = value;
+                string name = T("stat_" + stat);
+                Action select = () => { SetEffect(EffectKind.Stat, stat); if (effect.Amount == 0) effect.Amount = 10; picking = false; Build(); };
+                group.Items.Add(new Choice
+                {
+                    Search = name + " " + stat,
+                    Create = grid => Marked(Symbol(grid, 0, 0, Cell, MetaSymbols.StatSprite(stat), null, select, name, T("stat")), used.Contains(stat))
+                });
+            }
+            return new List<Group> { group };
+        }
+
+        static List<Group> MetaChoices(MetaKind type)
+        {
+            var group = new Group { Title = KindName(type), Banners = true };
+            foreach (MetaHandle value in WorldRules.Metas)
+            {
+                MetaHandle meta = value;
+                if (meta.Kind != type) continue;
+                bool marked = draft.Conditions.Any(c => c.Kind == ConditionKind.Membership && c.Meta == meta.Kind && c.MetaId == meta.Id);
+                Action select = () =>
+                {
+                    draft.Conditions.Add(new Condition { Kind = ConditionKind.Membership, Meta = meta.Kind, MetaId = meta.Id });
+                    selectedCondition = -1; picking = false; Build();
+                };
+                group.Items.Add(new Choice { Search = meta.Name, Create = grid => Marked(NativeUi.Banner(grid, meta, 34, select), marked) });
+            }
+            return new List<Group> { group };
+        }
+
+        static RectTransform Marked(RectTransform token, bool marked)
+        {
+            if (marked) Frame(token, 0);
+            return token;
+        }
+
+        static Color GroupColor(BaseCategoryAsset asset)
+        {
+            try { return string.IsNullOrEmpty(asset.color) ? HeaderGold : asset.getColor(); }
+            catch (Exception) { return HeaderGold; }
+        }
+
+        static void SetEffect(EffectKind kind, string value)
+        {
+            if (effect.Kind != kind) effect.Amount = 0;
+            effect.Kind = kind; effect.Value = value;
         }
 
         static void Save(RuleSet set)
         {
             WorldRules.Save(selected, set);
-            selectedCondition = -1; advanced = false;
+            selectedCondition = -1;
             Build();
         }
 
         static bool Matches(string value, string needle) => string.IsNullOrEmpty(needle) || value.IndexOf(needle, StringComparison.CurrentCultureIgnoreCase) >= 0;
 
+        // ── Controls
         static RectTransform Symbol(Transform parent, float x, float y, float size, Sprite sprite, MetaHandle meta, Action click, string name, string description = "")
         {
             RectTransform token = Button(parent, x, y, size, size, Slot, click);
-            if (meta != null) MetaSymbols.Draw(token, meta, 4, 4, size - 8);
-            else if (sprite != null) Picture(token, sprite, 5, 5, size - 10, size - 10);
+            if (meta != null) MetaSymbols.Draw(token, meta, 2, 2, size - 4);
+            else if (sprite != null) Picture(token, sprite, 4, 4, size - 8, size - 8);
             MetaSymbols.Tip(token, () => name, () => description);
             return token;
         }
 
         static void Badge(RectTransform token, string value)
         {
-            Rect(token, 0, 22, 32, 11, Hex("#20231f"));
-            Text(token, value, -3, 22, 38, 11, 7, Gold, TextAnchor.MiddleCenter);
+            Rect(token, 1, Cell - 10, Cell - 2, 9, new Color(0.08f, 0.08f, 0.07f, 0.85f));
+            Text(token, value, 0, Cell - 10, Cell, 9, 6, Gold, TextAnchor.MiddleCenter);
+        }
+
+        static void Corner(RectTransform token, Color color)
+        {
+            Rect(token, Cell - 8, 2, 6, 6, Edge);
+            Rect(token, Cell - 7, 3, 4, 4, color);
         }
 
         static RectTransform Small(Transform parent, string text, float x, float y, float size, Action click, string tooltip)
@@ -454,36 +753,54 @@ namespace MetaRules.UI
             return button;
         }
 
-        static RectTransform Label(Transform parent, string text, float x, float y, float w, float h, Action click)
+        static RectTransform Label(Transform parent, string text, float x, float y, float w, float h, Action click, string sprite = Gray)
         {
-            RectTransform button = Button(parent, x, y, w, h, "ui/special/special_buttonGray", click);
-            Text(button, text, 3, 0, w - 6, h, h > 24 ? 10 : 8, Ink, TextAnchor.MiddleCenter);
+            if (SpriteTextureLoader.getSprite(sprite) == null) sprite = Gray;
+            RectTransform button = Button(parent, x, y, w, h, sprite, click);
+            int size = h >= 24 ? 9 : 7;
+            Text(button, Fit(text, size, w - 4), 2, 0, w - 4, h, size, Ink, TextAnchor.MiddleCenter);
             return button;
         }
 
-        static void Footer(RectTransform pane, Action save, Action remove)
+        // Mutually exclusive choices; the active one is framed like native selections.
+        static void Segment(Transform parent, float x, float y, float w, string[] options, int active, Action<int> pick)
         {
-            if (remove != null) Label(pane, T("remove"), 0, 230, 100, 24, remove);
-            Label(pane, T("save"), C - 125, 230, 125, 24, save);
+            float gap = 2f, each = (w - gap * (options.Length - 1)) / options.Length;
+            for (int i = 0; i < options.Length; i++)
+            {
+                int index = i;
+                RectTransform button = Button(parent, x + i * (each + gap), y, each, 18, Slot, () => { if (index != active) { pick(index); Build(); } });
+                Text(button, Fit(options[i], 7, each - 4), 2, 0, each - 4, 18, 7, i == active ? Gold : Muted, TextAnchor.MiddleCenter);
+                if (i == active) Frame(button, 0);
+            }
         }
 
-        static void Paragraph(Transform parent, string value, float x, float y, float w, float h)
+        static void Footer(Transform parent, float y, Action save, Action cancel, Action remove)
         {
-            Text text = Text(parent, value, x, y, w, h, 8, Muted, TextAnchor.UpperLeft).GetComponent<Text>();
+            if (remove != null) Label(parent, T("remove"), 0, y, 60, 20, remove, Red);
+            Label(parent, T("cancel"), CW - 126, y, 60, 20, cancel);
+            Label(parent, T("save"), CW - 62, y, 62, 20, save);
+        }
+
+        static Text Paragraph(Transform parent, string value, float x, float y, float w, float h, int size = 7, TextAnchor align = TextAnchor.UpperLeft)
+        {
+            Text text = Text(parent, value, x, y, w, h, size, Muted, align).GetComponent<Text>();
             text.horizontalOverflow = HorizontalWrapMode.Wrap;
+            return text;
         }
 
-        static void Input(Transform parent, string value, string placeholder, float x, float y, float w, Action<string> change)
+        static void Input(Transform parent, string value, string placeholder, float x, float y, float w, float h, Action<string> change)
         {
-            RectTransform frame = Sliced(parent, Slot, x, y, w, 22);
+            string sprite = SpriteTextureLoader.getSprite(Field) != null ? Field : Slot;
+            RectTransform frame = Sliced(parent, sprite, x, y, w, h);
             Image image = frame.GetComponent<Image>(); image.raycastTarget = true;
             InputField input = frame.gameObject.AddComponent<InputField>();
             input.targetGraphic = image;
-            Text text = Text(frame, "", 6, 1, w - 12, 20, 8, Ink, TextAnchor.MiddleLeft).GetComponent<Text>();
+            Text text = Text(frame, "", 5, 0, w - 10, h, 7, Ink, TextAnchor.MiddleLeft).GetComponent<Text>();
             text.supportRichText = false;
             text.horizontalOverflow = HorizontalWrapMode.Wrap;
             input.textComponent = text;
-            input.placeholder = Text(frame, placeholder, 6, 1, w - 12, 20, 8, Muted, TextAnchor.MiddleLeft).GetComponent<Text>();
+            input.placeholder = Text(frame, placeholder, 5, 0, w - 10, h, 7, Muted, TextAnchor.MiddleLeft).GetComponent<Text>();
             input.text = value; input.characterLimit = 120;
             input.onValueChanged.AddListener(valueChanged => change(valueChanged));
         }

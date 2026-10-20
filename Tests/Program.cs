@@ -12,6 +12,26 @@ sealed class Subject : ISubject
     public bool HasTrait(string id) => Traits.Contains(id);
     public bool AddTrait(string id) => !Rejected.Contains(id) && Traits.Add(id);
     public void RemoveTrait(string id) => Traits.Remove(id);
+    // Equipment: item id "slot:name", e.g. "weapon:sword".
+    public readonly Dictionary<string, (string Item, long Id)> Slots = new Dictionary<string, (string, long)>();
+    public readonly HashSet<string> Cursed = new HashSet<string>();
+    public bool CanCarry = true;
+    long next = 100;
+    public string SlotOf(string item) => CanCarry ? item.Split(':')[0] : null;
+    public long Equipped(string slot, out string item)
+    {
+        item = Slots.TryGetValue(slot, out var held) ? held.Item : null;
+        return item == null ? -1 : held.Id;
+    }
+    public long Equip(string item)
+    {
+        string slot = SlotOf(item);
+        if (Cursed.Contains(slot)) return -1;
+        Slots[slot] = (item, ++next);
+        return next;
+    }
+    public void Unequip(string slot) => Slots.Remove(slot);
+    public string Held(string slot) => Slots.TryGetValue(slot, out var held) ? held.Item : null;
 }
 
 static class Program
@@ -21,6 +41,7 @@ static class Program
     static void Test(string name, Action action) { action(); passed++; Console.WriteLine("PASS " + name); }
     static Evaluation Evaluate(params Declaration[] declarations) => RuleEngine.Evaluate(new[] { new RuleSet { Declarations = new List<Declaration>(declarations) } });
     static Declaration Trait(string id, Lifetime life = Lifetime.Membership) => new Declaration { Value = id, Lifetime = life };
+    static Declaration Item(string id, Lifetime life = Lifetime.Membership) => new Declaration { Kind = EffectKind.Item, Value = id, Lifetime = life };
     static void Main()
     {
         Test("trait admission with AND, OR and negation", () =>
@@ -195,6 +216,72 @@ static class Program
             Assert(!RuleEngine.RequiresExit(actor, set), "matching clan was rejected");
             actor.Groups[MetaKind.Clan] = 43;
             Assert(RuleEngine.RequiresExit(actor, set), "changing clan did not invalidate membership");
+        });
+        Test("temporary equipment is given once and removed on leaving", () =>
+        {
+            var actor = new Subject(); var ledger = new TraitLedger();
+            Assert(RuleEngine.Reconcile(actor, Evaluate(Item("weapon:sword")), ledger), "equipment not given");
+            long id = actor.Equipped("weapon", out _);
+            for (int i = 0; i < 20; i++) Assert(!RuleEngine.Reconcile(actor, Evaluate(Item("weapon:sword")), ledger), "equipment regenerated");
+            Assert(actor.Equipped("weapon", out _) == id, "granted item replaced");
+            RuleEngine.Reconcile(actor, Evaluate(), ledger);
+            Assert(actor.Held("weapon") == null && ledger.IsEmpty(), "temporary equipment kept after leaving");
+        });
+        Test("replaced equipment is respected and never removed", () =>
+        {
+            var actor = new Subject(); var ledger = new TraitLedger();
+            RuleEngine.Reconcile(actor, Evaluate(Item("weapon:sword")), ledger);
+            actor.Slots["weapon"] = ("weapon:axe", 7); // city upgrade
+            Assert(!RuleEngine.Reconcile(actor, Evaluate(Item("weapon:sword")), ledger), "fought a native replacement");
+            RuleEngine.Reconcile(actor, Evaluate(), ledger);
+            Assert(actor.Held("weapon") == "weapon:axe", "native item removed on leaving");
+        });
+        Test("pre-existing equipment is kept and not claimed", () =>
+        {
+            var actor = new Subject(); actor.Slots["weapon"] = ("weapon:sword", 5); var ledger = new TraitLedger();
+            Assert(!RuleEngine.Reconcile(actor, Evaluate(Item("weapon:sword")), ledger), "regenerated an item already carried");
+            RuleEngine.Reconcile(actor, Evaluate(), ledger);
+            Assert(actor.Equipped("weapon", out _) == 5, "owned item removed");
+        });
+        Test("permanent equipment stays after leaving and is given again on rejoining", () =>
+        {
+            var actor = new Subject(); var ledger = new TraitLedger();
+            RuleEngine.Reconcile(actor, Evaluate(Item("helmet:iron", Lifetime.Permanent)), ledger);
+            RuleEngine.Reconcile(actor, Evaluate(), ledger);
+            Assert(actor.Held("helmet") == "helmet:iron" && ledger.IsEmpty(), "permanent equipment removed");
+            actor.Slots.Remove("helmet");
+            RuleEngine.Reconcile(actor, Evaluate(Item("helmet:iron", Lifetime.Permanent)), ledger);
+            Assert(actor.Held("helmet") == "helmet:iron", "rejoining did not give equipment again");
+        });
+        Test("first group wins a slot; cursed slots and unequippable creatures are skipped", () =>
+        {
+            var actor = new Subject(); var ledger = new TraitLedger();
+            RuleEngine.Reconcile(actor, Evaluate(Item("weapon:sword"), Item("weapon:axe"), Item("ring:gold")), ledger);
+            Assert(actor.Held("weapon") == "weapon:sword" && actor.Held("ring") == "ring:gold", "slot conflict resolved wrongly");
+            var cursed = new Subject(); cursed.Cursed.Add("weapon"); var other = new TraitLedger();
+            RuleEngine.Reconcile(cursed, Evaluate(Item("weapon:sword")), other);
+            Assert(cursed.Held("weapon") == null && other.IsEmpty(), "cursed slot was claimed");
+            var animal = new Subject { CanCarry = false }; other = new TraitLedger();
+            RuleEngine.Reconcile(animal, Evaluate(Item("weapon:sword")), other);
+            Assert(animal.Slots.Count == 0 && other.IsEmpty(), "creature without equipment received an item");
+        });
+        Test("changing the declared item swaps the temporary grant", () =>
+        {
+            var actor = new Subject(); var ledger = new TraitLedger();
+            RuleEngine.Reconcile(actor, Evaluate(Item("weapon:sword")), ledger);
+            RuleEngine.Reconcile(actor, Evaluate(Item("weapon:axe")), ledger);
+            Assert(actor.Held("weapon") == "weapon:axe" && ledger.Items["weapon"].Item == "weapon:axe", "declaration change not applied");
+        });
+        Test("legacy ledgers without equipment load and round-trip", () =>
+        {
+            var options = new JsonSerializerOptions { IncludeFields = true };
+            var ledger = JsonSerializer.Deserialize<TraitLedger>("{\"Owned\":{\"brave\":true}}", options);
+            var actor = new Subject(); actor.Traits.Add("brave");
+            RuleEngine.Reconcile(actor, Evaluate(Item("weapon:sword")), ledger);
+            Assert(!actor.HasTrait("brave") && actor.Held("weapon") == "weapon:sword", "legacy ledger failed");
+            ledger = JsonSerializer.Deserialize<TraitLedger>(JsonSerializer.Serialize(ledger, options), options);
+            RuleEngine.Reconcile(actor, Evaluate(), ledger);
+            Assert(actor.Held("weapon") == null, "equipment provenance lost on round trip");
         });
         Console.WriteLine(passed + " behavioral tests passed.");
     }
