@@ -94,7 +94,9 @@ namespace MetaRules.UI
 
         public static RectTransform ItemButton(Transform parent, EquipmentAsset item, bool marked, Action click)
         {
-            EquipmentButton native = Spawn<EquipmentButton>(ItemButtonPath, parent, e =>
+            // The item button prefab does not size itself as a grid cell; a plain cell holds it.
+            RectTransform cell = Box(parent, 0, 0, CellSize, CellSize, "item");
+            EquipmentButton native = Spawn<EquipmentButton>(ItemButtonPath, cell, e =>
             {
                 Undraggable(e.gameObject);
                 e.is_editor_button = true;
@@ -104,9 +106,40 @@ namespace MetaRules.UI
                 if (tip != null) tip.clickAction = null;
                 e.button.onClick.AddListener(() => click());
             });
-            if (native == null) return null;
-            if (marked) Frame((RectTransform)native.transform, 0);
-            return (RectTransform)native.transform;
+            if (native == null)
+            {
+                Object.Destroy(cell.gameObject);
+                return null;
+            }
+            var rt = (RectTransform)native.transform;
+            rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.anchoredPosition = Vector2.zero;
+            if (marked) Frame(cell, 0);
+            return cell;
+        }
+
+        // Turns a group's grid into a vertical list, for rows that are wider than a cell.
+        // Returns the width available to each row.
+        public static float MakeList(Group group, float spacing)
+        {
+            var area = (RectTransform)group.Grid;
+            RectOffset padding = new RectOffset(4, 4, 4, 4);
+            if (area.GetComponent<GridLayoutGroup>() is GridLayoutGroup grid)
+            {
+                padding = grid.padding;
+                Object.DestroyImmediate(grid);
+            }
+            var list = area.gameObject.AddComponent<VerticalLayoutGroup>();
+            list.padding = padding;
+            list.spacing = spacing;
+            list.childAlignment = TextAnchor.UpperCenter;
+            list.childControlWidth = list.childControlHeight = false;
+            list.childForceExpandWidth = list.childForceExpandHeight = false;
+            ContentSizeFitter fitter = area.GetComponent<ContentSizeFitter>();
+            if (fitter == null) fitter = area.gameObject.AddComponent<ContentSizeFitter>();
+            fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            float width = area.rect.width > 1f ? area.rect.width : 210f;
+            return Mathf.Min(210f, width) - padding.left - padding.right;
         }
 
         // A wrapper of the requested size holds the native banner, scaled from its 40px design.

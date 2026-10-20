@@ -251,21 +251,22 @@ namespace MetaRules.UI
             Small(declarations.Grid, "+", 0, 0, Cell, () => { effect = new Declaration(); StartPicker(false); }, T("add_declaration"));
             if (set.Declarations.Count == 0) Hint(T("no_declarations") + " — " + T("declarations_hint"));
 
-            Section(T("requirements"), set.Restrictions.Count);
+            NativeUi.Group requirements = Section(T("requirements"), set.Restrictions.Count);
+            float rowW = NativeUi.MakeList(requirements, 2f);
             foreach (Restriction value in set.Restrictions)
             {
                 Restriction item = value;
-                RectTransform row = Button(Block(24, "requirement"), 0, 0, CW, 24, Slot, () => { draft = Clone(item); selectedCondition = -1; Build(); });
+                RectTransform row = Button(requirements.Grid, 0, 0, rowW, 24, Slot, () => { draft = Clone(item); selectedCondition = -1; Build(); });
                 Text(row, T(item.Any ? "any_short" : "all_short"), 2, 0, 32, 24, 6, Gold, TextAnchor.MiddleCenter);
-                int fit = (int)((CW - 36 - (item.Enabled ? 4 : 44)) / 20);
+                int fit = (int)((rowW - 36 - (item.Enabled ? 4 : 44)) / 20);
                 int shown = Math.Min(item.Conditions.Count, item.Conditions.Count > fit ? fit - 1 : fit);
                 for (int j = 0; j < shown; j++) DrawCondition(row, item.Conditions[j], 36 + j * 20, 3, 18);
                 if (item.Conditions.Count > shown) Text(row, "+" + (item.Conditions.Count - shown), 36 + shown * 20, 0, 20, 24, 7, Muted, TextAnchor.MiddleCenter);
-                if (!item.Enabled) Text(row, T("disabled"), CW - 44, 0, 42, 24, 6, Bad, TextAnchor.MiddleCenter);
+                if (!item.Enabled) Text(row, T("disabled"), rowW - 44, 0, 42, 24, 6, Bad, TextAnchor.MiddleCenter);
                 MetaSymbols.Tip(row, () => T(item.Any ? "any" : "all"), () => string.Join("\n", item.Conditions.Select(Describe)));
                 if (!item.Enabled || !set.Enabled) Fade(row);
             }
-            Label(Block(18), "+  " + T("add_requirement"), 0, 0, CW, 18, () => { draft = new Restriction(); StartPicker(true); });
+            Label(requirements.Grid, "+  " + T("add_requirement"), 0, 0, rowW, 18, () => { draft = new Restriction(); StartPicker(true); });
             if (set.Restrictions.Count == 0) Hint(T("no_requirements") + " — " + T("requirements_hint"));
         }
 
