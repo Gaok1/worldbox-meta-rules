@@ -118,18 +118,35 @@ namespace MetaRules.UI
             return cell;
         }
 
+        public static void SetCellSize(Group group, Vector2 size)
+        {
+            switch (group.Grid.GetComponent<LayoutGroup>())
+            {
+                case LayoutGroupExt.GridLayoutGroupExtended native:
+                    native.constraint = LayoutGroupExt.GridLayoutGroupExtended.Constraint.Flexible;
+                    native.cellSize = size;
+                    break;
+                case GridLayoutGroup plain:
+                    plain.constraint = GridLayoutGroup.Constraint.Flexible;
+                    plain.cellSize = size;
+                    break;
+            }
+        }
+
         // Turns a group's grid into a vertical list, for rows that are wider than a cell.
         // Returns the width available to each row.
         public static float MakeList(Group group, float spacing)
         {
             var area = (RectTransform)group.Grid;
             RectOffset padding = new RectOffset(4, 4, 4, 4);
-            if (area.GetComponent<GridLayoutGroup>() is GridLayoutGroup grid)
+            // Native grids use the game's GridLayoutGroupExtended; only one LayoutGroup may exist.
+            if (area.GetComponent<LayoutGroup>() is LayoutGroup grid)
             {
                 padding = grid.padding;
                 Object.DestroyImmediate(grid);
             }
             var list = area.gameObject.AddComponent<VerticalLayoutGroup>();
+            if (list == null) return 210f - padding.left - padding.right;
             list.padding = padding;
             list.spacing = spacing;
             list.childAlignment = TextAnchor.UpperCenter;

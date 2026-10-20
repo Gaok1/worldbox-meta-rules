@@ -180,19 +180,24 @@ namespace MetaRules.UI
             results = null;
             summaryLabel = null;
             SetInset(picking ? PickerInset : 0f);
-            if (!ReferenceEquals(world, World.world?.map_stats) || selected == null ||
-                !WorldRules.Metas.Any(m => m.Target == selected.Target && m.Id == selected.Id))
-                Paragraph(Block(80), T("choose_meta"), 0, 10, CW, 70);
-            else if (picking) BuildPicker();
-            else
+            try
             {
-                BuildIdentity();
-                if (WorldRules.IsBroken(selected)) Paragraph(Block(90), T("invalid_data"), 0, 0, CW, 90);
-                else if (help) BuildHelp();
-                else if (draft != null) BuildRestrictionEditor();
-                else if (effect != null) BuildDeclarationEditor();
-                else BuildOverview();
+                if (!ReferenceEquals(world, World.world?.map_stats) || selected == null ||
+                    !WorldRules.Metas.Any(m => m.Target == selected.Target && m.Id == selected.Id))
+                    Paragraph(Block(80), T("choose_meta"), 0, 10, CW, 70);
+                else if (picking) BuildPicker();
+                else
+                {
+                    BuildIdentity();
+                    if (WorldRules.IsBroken(selected)) Paragraph(Block(90), T("invalid_data"), 0, 0, CW, 90);
+                    else if (help) BuildHelp();
+                    else if (draft != null) BuildRestrictionEditor();
+                    else if (effect != null) BuildDeclarationEditor();
+                    else BuildOverview();
+                }
             }
+            // Keep whatever was built usable; the error is in Player.log.
+            catch (Exception error) { WorldRules.Report(error); }
             LayoutRebuilder.ForceRebuildLayoutImmediate(content);
             content.anchoredPosition = Vector2.zero;
         }
@@ -545,11 +550,7 @@ namespace MetaRules.UI
             foreach (Group group in results)
             {
                 group.View = NativeUi.CreateGroup(content, group.Title, group.Color);
-                if (group.Banners && group.View.Grid.GetComponent<GridLayoutGroup>() is GridLayoutGroup grid)
-                {
-                    grid.constraint = GridLayoutGroup.Constraint.Flexible;
-                    grid.cellSize = new Vector2(34f, 40f);
-                }
+                if (group.Banners) NativeUi.SetCellSize(group.View, new Vector2(34f, 40f));
                 foreach (Choice entry in group.Items) entry.View = entry.Create(group.View.Grid);
             }
             Hint(T("no_results")).name = "no_results";
