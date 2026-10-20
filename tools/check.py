@@ -29,7 +29,7 @@ for path in (ROOT / "Code").rglob("*.cs"):
 # Prefixes are completed dynamically by enum/stat selectors.
 keys -= {"mr_stat_", "mr_kind_"}
 assert keys <= en.keys(), f"Missing translations: {keys - en.keys()}"
-for key in ["restrict", "declare", "inspect", "open", "open_description", "title"]:
+for key in ["declarations", "requirements", "add_declaration", "add_requirement", "open", "open_description", "title"]:
     assert "mr_" + key in en
 assert not list((ROOT / "Code").rglob("*.dll")), "Game binaries must not be distributed"
 print(f"PASS: metadata, {len(en)} English/pt-BR entries and source-only distribution")

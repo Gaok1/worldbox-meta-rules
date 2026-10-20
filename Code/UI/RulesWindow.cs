@@ -5,7 +5,6 @@ using System.Linq;
 using MetaRules.Core;
 using MetaRules.Game;
 using NeoModLoader.General;
-using NeoModLoader.General.UI.Tab;
 using UnityEngine;
 using UnityEngine.UI;
 using static MetaRules.UI.UiKit;
@@ -13,66 +12,68 @@ using Object = UnityEngine.Object;
 
 namespace MetaRules.UI
 {
-    // Native ScrollWindow and sliced sprites, following Diplomacy Overhaul's UI idiom.
+    // One individual meta, two sections. Controls for a rule live in its editor.
     public static class RulesWindow
     {
         const string WindowId = "mr_window";
-        const float W = 540f, H = 350f, Left = 160f, Right = 354f;
+        const float W = 390f, H = 360f, C = W - 24f;
+        const int Columns = 8, PageSize = 48;
         static ScrollWindow window;
-        static RectTransform root;
-        static MetaKind kind;
+        static RectTransform root, pickerResults;
         static MetaHandle selected;
-        static int tab;
-        static string query = "";
+        static MapStats world;
         static Restriction draft;
         static Declaration effect;
-        static Action<ActorTrait> pickTrait;
-        static Action<MetaHandle> pickMeta;
-        static Action<string> pickStat;
-        static MetaKind pickKind;
-        static string pickQuery = "";
-        static int page;
-        static MapStats world;
+        static int selectedCondition = -1;
+        static bool picking, pickingCondition, advanced, settings;
+        static int category, page;
+        static string query = "";
+        static Text summaryLabel;
+        static int memberCount, incompatibleCount;
+        static float nextSummary;
+
+        sealed class Choice
+        {
+            public string Name, Detail;
+            public Sprite Sprite;
+            public MetaHandle Meta;
+            public Action Select;
+        }
 
         public static string T(string key) => LM.Get("mr_" + key);
         public static string KindName(MetaKind value) => T("kind_" + value.ToString().ToLowerInvariant());
-        static string TraitName(string id)
+        static string TraitName(string id) => LocalizedTextManager.stringExists("trait_" + id) ? LM.Get("trait_" + id) : id;
+        static RuleSet Current => WorldRules.Get(selected) ?? new RuleSet();
+
+        // Entry points are attached to native meta windows, not a global type browser.
+        public static void Init() { }
+
+        public static void Tick()
         {
-            string key = "trait_" + id;
-            return LocalizedTextManager.stringExists(key) ? LM.Get(key) : id;
+            if (window == null || !window.gameObject.activeInHierarchy || summaryLabel == null || selected == null ||
+                Time.realtimeSinceStartup < nextSummary || !ReferenceEquals(world, World.world?.map_stats) || SmoothLoader.isLoading()) return;
+            nextSummary = Time.realtimeSinceStartup + 1f;
+            UpdateSummary();
         }
 
-        public static void Init()
+        public static void OpenFor(MetaHandle meta)
         {
-            PowersTab powers = TabManager.CreateTab("mr_tab", "mr_tab", "mr_tab_description", SpriteTextureLoader.getSprite("ui/Icons/iconClan"));
-            powers.parentObj = powers.transform.parent.parent.gameObject;
-            PowerButtonCreator.AddButtonToTab(PowerButtonCreator.CreateSimpleButton("mr_open", Open,
-                SpriteTextureLoader.getSprite("ui/Icons/iconOptions")), powers);
-        }
-
-        public static void Open()
-        {
-            if (World.world?.units == null || SmoothLoader.isLoading()) return;
-            if (!ReferenceEquals(world, World.world.map_stats))
-            {
-                world = World.world.map_stats;
-                selected = null; draft = null; effect = null; ClearPicker(); query = "";
-            }
+            if (meta == null || World.world?.units == null || SmoothLoader.isLoading()) return;
+            world = World.world.map_stats;
             WorldRules.RefreshMetas();
+            selected = meta;
+            ResetEditor();
             if (window == null) Create();
             ScrollWindow.showWindow(WindowId);
             Build();
             FitWindow();
         }
 
-        // Called from the native window: keep the exact selected instance, not its type.
-        public static void OpenFor(MetaHandle meta)
+        static void ResetEditor()
         {
-            Open();
-            if (meta == null || window == null) return;
-            selected = meta; kind = meta.Kind; query = "";
-            draft = null; effect = null; ClearPicker();
-            Build();
+            draft = null; effect = null; selectedCondition = -1;
+            picking = false; advanced = false; settings = false;
+            query = ""; page = 0;
         }
 
         static void Create()
@@ -85,7 +86,7 @@ namespace MetaRules.UI
             bg.GetComponent<Image>().type = Image.Type.Sliced;
             Transform close = window.transform.Find("CloseBackground");
             if (close != null) close.localPosition = new Vector3(W / 2f - 18f, H / 2f + 4f);
-            window.titleText.transform.localPosition = new Vector3(0f, H / 2f - 2f);
+            window.titleText.transform.localPosition = new Vector3(0, H / 2f - 2f);
             root = Box(bg, 0, 0, W, H, "mr_root");
             root.anchorMin = root.anchorMax = root.pivot = new Vector2(0.5f, 0.5f);
             root.anchoredPosition = Vector2.zero;
@@ -93,282 +94,398 @@ namespace MetaRules.UI
 
         static void FitWindow()
         {
-            Canvas canvas = window.GetComponentInParent<Canvas>();
+            RectTransform canvas = window.GetComponentInParent<Canvas>()?.transform as RectTransform;
             if (canvas == null) return;
-            RectTransform rect = canvas.transform as RectTransform;
-            float scale = Mathf.Min(1f, (rect.rect.width - 80f) / (W + 16f), (rect.rect.height - 35f) / (H + 20f));
-            window.transform.localScale = new Vector3(Mathf.Max(0.35f, scale), Mathf.Max(0.35f, scale), 1f);
+            float scale = Mathf.Min(1f, (canvas.rect.width - 80f) / (W + 16f), (canvas.rect.height - 35f) / (H + 20f));
+            window.transform.localScale = new Vector3(Mathf.Max(0.35f, scale), Mathf.Max(0.35f, scale), 1);
         }
 
-        static void ClearPicker() { pickTrait = null; pickMeta = null; pickStat = null; page = 0; pickQuery = ""; }
-        static RuleSet Current => WorldRules.Get(selected) ?? new RuleSet();
-        static void Save(RuleSet set) { WorldRules.Save(selected, set); Build(); }
-
-        static void Build()
+        static void Clear(Transform parent)
         {
-            if (root == null) return;
-            foreach (Transform child in root)
+            foreach (Transform child in parent)
             {
                 child.gameObject.SetActive(false);
                 Object.Destroy(child.gameObject);
             }
-            // Targets may die while the window is open; never edit a stale world's data.
-            if (selected != null && !WorldRules.Metas.Any(m => m.Target == selected.Target && m.Id == selected.Id))
-            { selected = null; draft = null; effect = null; ClearPicker(); }
-            BuildBrowser();
-            RectTransform pane = Box(root, Left + 16f, 22f, Right, H - 45f);
-            if (selected == null)
+        }
+
+        static void Build()
+        {
+            if (root == null) return;
+            Tooltip.hideTooltip();
+            Clear(root);
+            pickerResults = null;
+            summaryLabel = null;
+            if (!ReferenceEquals(world, World.world?.map_stats) || selected == null ||
+                !WorldRules.Metas.Any(m => m.Target == selected.Target && m.Id == selected.Id))
             {
-                Header(pane, 0, 0, Right, T("welcome"), "ui/Icons/iconClan");
-                Paragraph(pane, T("intro"), 8, 32, Right - 16, 100);
-                Paragraph(pane, T("admission_help"), 8, 145, Right - 16, 95);
+                Paragraph(root, T("choose_meta"), 24, 110, W - 48, 70);
                 return;
             }
-            Header(pane, 0, 0, Right, Fit(selected.Name, 9, Right - 55), "ui/Icons/iconClan");
-            Text(pane, KindName(selected.Kind) + " · #" + selected.Id, 7, 22, Right - 14, 12, 6, Muted, TextAnchor.MiddleLeft);
-            if (WorldRules.IsBroken(selected)) { Paragraph(pane, T("invalid_data"), 8, 45, Right - 16, 100); return; }
-            if (pickTrait != null || pickMeta != null || pickStat != null) { BuildPicker(pane); return; }
-            if (draft != null) { BuildRestriction(pane); return; }
-            if (effect != null) { BuildDeclaration(pane); return; }
-            for (int i = 0; i < 3; i++)
-            {
-                int index = i;
-                LabelButton(pane, T(new[] { "restrict", "declare", "inspect" }[i]), i * 118, 38, 114, 19,
-                    () => { tab = index; Build(); }, tab == i);
-            }
-            if (tab == 0) BuildRestrictions(pane);
-            else if (tab == 1) BuildDeclarations(pane);
-            else BuildInspection(pane);
+            BuildIdentity();
+            if (WorldRules.IsBroken(selected)) { Paragraph(root, T("invalid_data"), 20, 100, W - 40, 100); return; }
+            RectTransform pane = Box(root, 12, 84, C, 260, "rules_content");
+            if (picking) BuildPicker(pane);
+            else if (settings) BuildSettings(pane);
+            else if (draft != null) BuildRestrictionEditor(pane);
+            else if (effect != null) BuildDeclarationEditor(pane);
+            else BuildOverview(pane);
         }
 
-        static void BuildBrowser()
+        static void BuildIdentity()
         {
-            RectTransform browser = Sliced(root, Slot, 8, 22, Left, H - 45);
-            foreach (MetaKind value in Enum.GetValues(typeof(MetaKind)))
-            {
-                MetaKind captured = value;
-                int i = (int)value;
-                LabelButton(browser, KindName(value), 4 + i % 3 * 51, 5 + i / 3 * 19, 49, 17,
-                    () => { kind = captured; query = ""; Build(); }, kind == value);
-            }
-            Input(browser, query, T("search"), 5, 67, Left - 10, s => { query = s; Build(); });
-            var metas = WorldRules.Metas.Where(m => m.Kind == kind && Matches(m.Name, query)).ToList();
-            RectTransform list = Scroll(browser, "metas", 4, 91, Left - 8, 185, metas.Count * 25f);
-            for (int i = 0; i < metas.Count; i++)
-            {
-                MetaHandle meta = metas[i];
-                bool active = selected?.Target == meta.Target;
-                RectTransform row = LabelButton(list, Fit(meta.Name, 7, Left - 20), 0, i * 25, Left - 8, 23, () =>
-                { selected = meta; draft = null; effect = null; ClearPicker(); Build(); }, active);
-                RuleSet set = WorldRules.Get(meta);
-                if (set != null) Text(row, set.Restrictions.Count + " / " + set.Declarations.Count, 5, 14, Left - 18, 7, 5, Muted, TextAnchor.LowerRight);
-            }
-            LabelButton(browser, T("refresh"), 5, 282, Left - 10, 17, () => { WorldRules.RefreshMetas(); Build(); });
+            RectTransform emblem = Button(root, 16, 24, 44, 44, null, ReturnToMeta);
+            MetaSymbols.Draw(emblem, selected, 0, 0, 44);
+            MetaSymbols.Tip(emblem, () => selected.Name, () => T("return_meta"));
+            Text(root, Fit(selected.Name, 12, C - 90), 72, 25, C - 90, 22, 12, Ink, TextAnchor.MiddleLeft);
+            Text(root, KindName(selected.Kind) + (Current.Enabled ? "" : " · " + T("paused")), 72, 48, C - 95, 14, 7, Muted, TextAnchor.MiddleLeft);
+            Small(root, "…", W - 38, 47, 21, () => { ResetEditor(); settings = true; Build(); }, T("options"));
         }
 
-        static void BuildRestrictions(RectTransform pane)
+        static void ReturnToMeta()
+        {
+            NativeMetaWindows.OpenNative(selected);
+        }
+
+        static RectTransform Section(RectTransform pane, string title, float y, Action add)
+        {
+            RectTransform card = Sliced(pane, Slot, 0, y, C, 112);
+            Text(card, title, 12, 4, C - 52, 20, 10, HeaderGold, TextAnchor.MiddleLeft);
+            Rect(card, 10, 26, C - 20, 1, Line);
+            Small(card, "+", C - 33, 4, 23, add, title);
+            return card;
+        }
+
+        static void BuildOverview(RectTransform pane)
         {
             RuleSet set = Current;
-            LabelButton(pane, "+ " + T("restriction"), 0, 65, Right, 20, () => { draft = new Restriction(); Build(); });
-            Paragraph(pane, T("restriction_hint"), 5, 89, Right - 10, 30);
-            RectTransform list = Scroll(pane, "restrictions", 0, 123, Right, 150, set.Restrictions.Count * 45f);
-            for (int i = 0; i < set.Restrictions.Count; i++)
+            RectTransform declarations = Section(pane, T("declarations"), 0, () =>
+            { effect = new Declaration(); StartPicker(false); });
+            RectTransform requirements = Section(pane, T("requirements"), 124, () =>
+            { draft = new Restriction(); StartPicker(true); });
+
+            if (set.Declarations.Count == 0) Empty(declarations, T("no_declarations"));
+            else
             {
-                Restriction rule = set.Restrictions[i];
-                RectTransform card = Sliced(list, Slot, 0, i * 45, Right, 42);
-                Text(card, (rule.Any ? T("any") : T("all")) + ": " + rule.Conditions.Count, 6, 2, Right - 110, 13, 7, Gold, TextAnchor.MiddleLeft);
-                Text(card, Fit(string.Join("; ", rule.Conditions.Select(Describe)), 6, Right - 18), 6, 17, Right - 12, 14, 6, Ink, TextAnchor.MiddleLeft);
-                LabelButton(card, T(rule.Enabled ? "on" : "off"), Right - 105, 2, 32, 13, () => { rule.Enabled = !rule.Enabled; Save(set); }, rule.Enabled);
-                LabelButton(card, T("edit"), Right - 70, 2, 32, 13, () => { draft = Clone(rule); Build(); });
-                LabelButton(card, "×", Right - 34, 2, 28, 13, () => { set.Restrictions.Remove(rule); Save(set); });
+                float rows = (set.Declarations.Count + Columns - 1) / Columns;
+                RectTransform grid = Scroll(declarations, "declarations", 11, 32, C - 22, 72, rows * 38);
+                for (int i = 0; i < set.Declarations.Count; i++)
+                {
+                    Declaration item = set.Declarations[i];
+                    RectTransform token = Symbol(grid, i % Columns * 43, i / Columns * 38, 32,
+                        item.Kind == EffectKind.Trait ? MetaSymbols.TraitSprite(item.Value) : MetaSymbols.StatSprite(item.Value), null,
+                        () => { effect = Clone(item); Build(); }, DeclarationName(item),
+                        T(item.Kind == EffectKind.Stat || item.Lifetime == Lifetime.Membership ? "while_member" : "permanent"));
+                    if (!item.Enabled || !set.Enabled) Fade(token);
+                    if (item.Kind == EffectKind.Stat) Badge(token, Number(item.Amount));
+                    else if (item.Lifetime == Lifetime.Permanent) Rect(token, 25, 3, 4, 4, Gold);
+                }
             }
+            if (set.Restrictions.Count == 0) Empty(requirements, T("no_requirements"));
+            else
+            {
+                RectTransform list = Scroll(requirements, "requirements", 11, 32, C - 22, 72, set.Restrictions.Count * 37);
+                for (int i = 0; i < set.Restrictions.Count; i++)
+                {
+                    Restriction item = set.Restrictions[i];
+                    RectTransform row = Button(list, 0, i * 37, C - 22, 33, Slot,
+                        () => { draft = Clone(item); selectedCondition = -1; Build(); });
+                    int shown = Math.Min(item.Conditions.Count, 7);
+                    for (int j = 0; j < shown; j++) DrawCondition(row, item.Conditions[j], 5 + j * 43, 3, 27);
+                    if (item.Conditions.Count > shown) Text(row, "+" + (item.Conditions.Count - shown), C - 52, 5, 25, 22, 8, Muted, TextAnchor.MiddleCenter);
+                    MetaSymbols.Tip(row, () => T(item.Any ? "any" : "all"), () => string.Join("\n", item.Conditions.Select(Describe)));
+                    if (!item.Enabled || !set.Enabled) Fade(row);
+                }
+            }
+            RectTransform summary = Button(pane, 2, 243, C - 4, 15, null, () => { });
+            summaryLabel = Text(summary, "", 0, 0, C - 4, 15, 7, Muted, TextAnchor.MiddleCenter).GetComponent<Text>();
+            UpdateSummary();
+            MetaSymbols.Tip(summary, () => T("members") + ": " + memberCount,
+                () => T("violations") + ": " + incompatibleCount + "\n" + T("admission_help") +
+                    (selected.Kind == MetaKind.Subspecies ? "\n" + T("subspecies_help") : ""));
         }
 
+        static void UpdateSummary()
+        {
+            memberCount = WorldRules.MemberCount(selected, out incompatibleCount);
+            summaryLabel.text = memberCount + " " + T("members").ToLowerInvariant() +
+                (incompatibleCount > 0 ? " · " + incompatibleCount + " " + T("incompatible") : "");
+        }
+
+        static void Empty(RectTransform card, string message) => Text(card, message, 12, 45, C - 24, 30, 8, Muted, TextAnchor.MiddleCenter);
+        static void Fade(RectTransform target) => target.gameObject.AddComponent<CanvasGroup>().alpha = 0.4f;
+        static string Number(float n) => n.ToString("+0.##;-0.##;0", CultureInfo.InvariantCulture);
+        static string DeclarationName(Declaration d) => d.Kind == EffectKind.Trait ? TraitName(d.Value) : T("stat_" + d.Value) + " " + Number(d.Amount);
+        static Declaration Clone(Declaration d) => new Declaration { Id = d.Id, Enabled = d.Enabled, Kind = d.Kind, Value = d.Value, Amount = d.Amount, Lifetime = d.Lifetime };
         static Restriction Clone(Restriction r) => new Restriction
         {
             Id = r.Id, Enabled = r.Enabled, Any = r.Any,
             Conditions = r.Conditions.Select(c => new Condition { Kind = c.Kind, Trait = c.Trait, Meta = c.Meta, MetaId = c.MetaId, Negated = c.Negated }).ToList()
         };
+        static MetaHandle Referenced(Condition c) => WorldRules.Metas.FirstOrDefault(m => m.Kind == c.Meta && m.Id == c.MetaId);
+        static string Describe(Condition c) => (c.Negated ? T("not") + " " : "") +
+            (c.Kind == ConditionKind.Trait ? TraitName(c.Trait) : KindName(c.Meta) + ": " + (Referenced(c)?.Name ?? T("missing_meta")));
 
-        static string Describe(Condition condition)
+        static void DrawCondition(Transform parent, Condition c, float x, float y, float size)
         {
-            string label = condition.Kind == ConditionKind.Trait ? TraitName(condition.Trait) :
-                KindName(condition.Meta) + ": " + (WorldRules.Metas.FirstOrDefault(m => m.Kind == condition.Meta && m.Id == condition.MetaId)?.Name ?? "#" + condition.MetaId);
-            return (condition.Negated ? T("not") + " " : "") + label;
-        }
-
-        static void BuildRestriction(RectTransform pane)
-        {
-            LabelButton(pane, T(draft.Any ? "any" : "all"), 0, 40, Right, 19, () => { draft.Any = !draft.Any; Build(); });
-            LabelButton(pane, "+ " + T("trait"), 0, 64, 170, 20, () =>
-            { pickTrait = t => { draft.Conditions.Add(new Condition { Trait = t.id }); ClearPicker(); Build(); }; Build(); });
-            LabelButton(pane, "+ " + T("membership"), 178, 64, 176, 20, () =>
+            if (c.Kind == ConditionKind.Trait) Picture(parent, MetaSymbols.TraitSprite(c.Trait), x + 2, y + 2, size - 4, size - 4);
+            else if (Referenced(c) is MetaHandle meta) MetaSymbols.Draw(parent, meta, x + 2, y + 2, size - 4);
+            else Picture(parent, MetaSymbols.KindSprite(c.Meta), x + 2, y + 2, size - 4, size - 4);
+            if (c.Negated)
             {
-                pickMeta = m => { draft.Conditions.Add(new Condition { Kind = ConditionKind.Membership, Meta = m.Kind, MetaId = m.Id }); ClearPicker(); Build(); };
-                pickKind = MetaKind.Clan; Build();
-            });
-            RectTransform list = Scroll(pane, "conditions", 0, 94, Right, 140, draft.Conditions.Count * 27);
-            for (int i = 0; i < draft.Conditions.Count; i++)
-            {
-                Condition c = draft.Conditions[i];
-                Text(list, Fit(Describe(c), 7, Right - 85), 4, i * 27 + 3, Right - 85, 17, 7, Ink, TextAnchor.MiddleLeft);
-                LabelButton(list, T("not"), Right - 75, i * 27, 40, 21, () => { c.Negated = !c.Negated; Build(); }, c.Negated);
-                LabelButton(list, "×", Right - 29, i * 27, 25, 21, () => { draft.Conditions.Remove(c); Build(); });
-            }
-            LabelButton(pane, T("cancel"), 0, 250, 170, 22, () => { draft = null; Build(); });
-            LabelButton(pane, T("save"), 178, 250, 176, 22, () =>
-            {
-                if (draft.Conditions.Count == 0) return;
-                RuleSet set = Current;
-                set.Restrictions.RemoveAll(r => r.Id == draft.Id);
-                set.Restrictions.Add(draft); draft = null; Save(set);
-            }, true);
-        }
-
-        static void BuildDeclarations(RectTransform pane)
-        {
-            RuleSet set = Current;
-            LabelButton(pane, "+ " + T("trait"), 0, 65, 170, 20, () =>
-            { effect = new Declaration(); pickTrait = t => { effect.Value = t.id; ClearPicker(); Build(); }; Build(); });
-            LabelButton(pane, "+ " + T("stat"), 178, 65, 176, 20, () =>
-            { effect = new Declaration { Kind = EffectKind.Stat, Amount = 10 }; pickStat = s => { effect.Value = s; ClearPicker(); Build(); }; Build(); });
-            Paragraph(pane, T("declaration_hint"), 5, 89, Right - 10, 30);
-            RectTransform list = Scroll(pane, "declarations", 0, 123, Right, 150, set.Declarations.Count * 45f);
-            for (int i = 0; i < set.Declarations.Count; i++)
-            {
-                Declaration d = set.Declarations[i];
-                RectTransform card = Sliced(list, Slot, 0, i * 45, Right, 42);
-                string title = d.Kind == EffectKind.Trait ? TraitName(d.Value) : T("stat_" + d.Value) + " " + d.Amount.ToString("+0.##;-0.##;0", CultureInfo.InvariantCulture);
-                Text(card, Fit(title, 7, Right - 114), 6, 2, Right - 114, 13, 7, Gold, TextAnchor.MiddleLeft);
-                Text(card, T(d.Kind == EffectKind.Stat || d.Lifetime == Lifetime.Membership ? "while_member" : "permanent"), 6, 18, Right - 12, 12, 6, Muted, TextAnchor.MiddleLeft);
-                LabelButton(card, T(d.Enabled ? "on" : "off"), Right - 105, 2, 32, 13, () => { d.Enabled = !d.Enabled; Save(set); }, d.Enabled);
-                LabelButton(card, T("edit"), Right - 70, 2, 32, 13, () =>
-                { effect = new Declaration { Id = d.Id, Kind = d.Kind, Enabled = d.Enabled, Value = d.Value, Amount = d.Amount, Lifetime = d.Lifetime }; Build(); });
-                LabelButton(card, "×", Right - 34, 2, 28, 13, () => { set.Declarations.Remove(d); Save(set); });
+                RectTransform slash = Rect(parent, x + 2, y + size / 2, size - 4, 2, Hex("#dc6a58"));
+                slash.pivot = new Vector2(0.5f, 0.5f);
+                slash.anchoredPosition = new Vector2(x + size / 2, -(y + size / 2));
+                slash.localRotation = Quaternion.Euler(0, 0, 45);
             }
         }
 
-        static void BuildDeclaration(RectTransform pane)
+        static void EditorHeader(RectTransform pane, string title, Action back)
         {
-            string label = effect.Kind == EffectKind.Trait ? TraitName(effect.Value) : T("stat_" + effect.Value);
-            Text(pane, Fit(label, 10, Right - 20), 10, 45, Right - 20, 22, 10, Gold, TextAnchor.MiddleCenter);
+            Small(pane, "‹", 0, 0, 22, back, T("back"));
+            Text(pane, title, 30, 0, C - 62, 23, 9, Gold, TextAnchor.MiddleCenter);
+        }
+
+        static void BuildDeclarationEditor(RectTransform pane)
+        {
+            EditorHeader(pane, T("declaration"), () => { effect = null; advanced = false; Build(); });
+            Small(pane, "…", C - 22, 0, 22, () => { advanced = !advanced; Build(); }, T("options"));
+            Symbol(pane, C / 2 - 24, 35, 48, effect.Kind == EffectKind.Trait ? MetaSymbols.TraitSprite(effect.Value) : MetaSymbols.StatSprite(effect.Value), null,
+                () => StartPicker(false), DeclarationName(effect), T("change_selection"));
+            Text(pane, Fit(effect.Kind == EffectKind.Trait ? TraitName(effect.Value) : T("stat_" + effect.Value), 10, C - 20), 10, 92, C - 20, 22, 10, Ink, TextAnchor.MiddleCenter);
             if (effect.Kind == EffectKind.Trait)
             {
-                LabelButton(pane, T(effect.Lifetime == Lifetime.Membership ? "while_member" : "permanent"), 5, 85, Right - 10, 25,
+                Label(pane, T(effect.Lifetime == Lifetime.Membership ? "while_member" : "permanent"), 40, 130, C - 80, 24,
                     () => { effect.Lifetime = effect.Lifetime == Lifetime.Membership ? Lifetime.Permanent : Lifetime.Membership; Build(); });
-                Paragraph(pane, T("trait_help"), 8, 123, Right - 16, 75);
             }
             else
             {
-                Input(pane, effect.Amount.ToString(CultureInfo.InvariantCulture), T("amount"), 8, 85, Right - 16, value =>
+                Input(pane, effect.Amount.ToString(CultureInfo.InvariantCulture), T("amount"), 85, 130, C - 170, value =>
                 {
-                    if (float.TryParse(value.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out float amount)
-                        && !float.IsNaN(amount) && !float.IsInfinity(amount)) effect.Amount = Mathf.Clamp(amount, -9999, 9999);
+                    if (float.TryParse(value.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out float amount) && !float.IsNaN(amount) && !float.IsInfinity(amount))
+                        effect.Amount = Mathf.Clamp(amount, -9999, 9999);
                 });
-                Paragraph(pane, T("stat_help"), 8, 123, Right - 16, 75);
             }
-            LabelButton(pane, T("cancel"), 0, 250, 170, 22, () => { effect = null; Build(); });
-            LabelButton(pane, T("save"), 178, 250, 176, 22, () =>
+            if (advanced) Label(pane, T(effect.Enabled ? "rule_on" : "rule_off"), 40, 166, C - 80, 21, () => { effect.Enabled = !effect.Enabled; Build(); });
+            Footer(pane, () =>
             {
                 if (string.IsNullOrEmpty(effect.Value)) return;
                 RuleSet set = Current;
-                set.Declarations.RemoveAll(d => d.Id == effect.Id);
-                set.Declarations.Add(effect); effect = null; Save(set);
-            }, true);
+                int index = set.Declarations.FindIndex(d => d.Id == effect.Id);
+                if (index < 0) set.Declarations.Add(effect); else set.Declarations[index] = effect;
+                effect = null; Save(set);
+            }, Current.Declarations.Any(d => d.Id == effect.Id) ? (Action)(() =>
+            { RuleSet set = Current; set.Declarations.RemoveAll(d => d.Id == effect.Id); effect = null; Save(set); }) : null);
         }
 
-        static void BuildInspection(RectTransform pane)
+        static void BuildRestrictionEditor(RectTransform pane)
         {
+            EditorHeader(pane, T("requirement"), () => { draft = null; advanced = false; Build(); });
+            Small(pane, "…", C - 22, 0, 22, () => { selectedCondition = -1; advanced = !advanced; Build(); }, T("options"));
+            RectTransform card = Sliced(pane, Slot, 0, 34, C, 100);
+            int cells = draft.Conditions.Count + 1;
+            RectTransform grid = Scroll(card, "conditions", 10, 10, C - 20, 80, ((cells + Columns - 1) / Columns) * 38);
+            for (int i = 0; i < draft.Conditions.Count; i++)
+            {
+                int index = i; Condition condition = draft.Conditions[i];
+                RectTransform token = Button(grid, i % Columns * 43, i / Columns * 38, 32, 32, Slot, () => { selectedCondition = index; Build(); });
+                DrawCondition(token, condition, 0, 0, 32);
+                MetaSymbols.Tip(token, () => Describe(condition));
+                if (selectedCondition == index) Frame(token, 0);
+            }
+            int count = draft.Conditions.Count;
+            Small(grid, "+", count % Columns * 43, count / Columns * 38, 32, () => StartPicker(true), T("add_condition"));
+            if (selectedCondition >= 0 && selectedCondition < draft.Conditions.Count)
+            {
+                Condition condition = draft.Conditions[selectedCondition];
+                Text(pane, Fit(Describe(condition), 8, C - 20), 10, 145, C - 20, 20, 8, Ink, TextAnchor.MiddleCenter);
+                Label(pane, T("invert_condition"), 20, 171, 155, 21, () => { condition.Negated = !condition.Negated; Build(); });
+                Label(pane, T("remove"), 191, 171, 155, 21, () => { draft.Conditions.RemoveAt(selectedCondition); selectedCondition = -1; Build(); });
+            }
+            else if (advanced)
+            {
+                Label(pane, T(draft.Any ? "any" : "all"), 20, 150, C - 40, 22, () => { draft.Any = !draft.Any; Build(); });
+                Label(pane, T(draft.Enabled ? "rule_on" : "rule_off"), 20, 180, C - 40, 21, () => { draft.Enabled = !draft.Enabled; Build(); });
+            }
+            Footer(pane, () =>
+            {
+                if (draft.Conditions.Count == 0) return;
+                RuleSet set = Current;
+                int index = set.Restrictions.FindIndex(r => r.Id == draft.Id);
+                if (index < 0) set.Restrictions.Add(draft); else set.Restrictions[index] = draft;
+                draft = null; Save(set);
+            }, Current.Restrictions.Any(r => r.Id == draft.Id) ? (Action)(() =>
+            { RuleSet set = Current; set.Restrictions.RemoveAll(r => r.Id == draft.Id); draft = null; Save(set); }) : null);
+        }
+
+        static void BuildSettings(RectTransform pane)
+        {
+            EditorHeader(pane, T("options"), () => { settings = false; Build(); });
             RuleSet set = Current;
-            int count = WorldRules.MemberCount(selected, out int violations);
-            Text(pane, T("members") + ": " + count + "   ·   " + T("violations") + ": " + violations, 5, 67, Right - 10, 20, 8, Gold, TextAnchor.MiddleLeft);
-            LabelButton(pane, T(set.Enabled ? "rules_on" : "rules_off"), 5, 94, Right - 10, 22, () => { set.Enabled = !set.Enabled; Save(set); }, set.Enabled);
-            Paragraph(pane, T("admission_help"), 7, 129, Right - 14, 75);
-            Paragraph(pane, T("provenance_help"), 7, 211, Right - 14, 65);
-            Text(pane, T("blocked") + ": " + WorldRules.BlockedAdmissions, 5, 279, Right - 10, 14, 6, Muted, TextAnchor.MiddleLeft);
+            Label(pane, T(set.Enabled ? "rules_on" : "rules_off"), 35, 50, C - 70, 26, () => { set.Enabled = !set.Enabled; Save(set); });
+            Paragraph(pane, T("provenance_help"), 20, 103, C - 40, 65);
+            Paragraph(pane, T("admission_help"), 20, 174, C - 40, 65);
+        }
+
+        static void StartPicker(bool forCondition)
+        {
+            picking = true; pickingCondition = forCondition; category = 0; query = ""; page = 0;
+            Build();
+        }
+
+        static void LeavePicker()
+        {
+            picking = false;
+            if (effect != null && string.IsNullOrEmpty(effect.Value)) effect = null;
+            if (draft != null && draft.Conditions.Count == 0) draft = null;
+            Build();
         }
 
         static void BuildPicker(RectTransform pane)
         {
-            bool metas = pickMeta != null;
-            int listY = metas ? 117 : 75;
-            if (metas)
-                foreach (MetaKind value in Enum.GetValues(typeof(MetaKind)))
+            EditorHeader(pane, T(pickingCondition ? "add_requirement" : "add_declaration"), LeavePicker);
+            int filters = pickingCondition ? 10 : 2;
+            for (int i = 0; i < filters; i++)
+            {
+                int filter = i;
+                Sprite icon = i == 0 ? MetaSymbols.TraitSprite("strong") :
+                    pickingCondition ? MetaSymbols.KindSprite((MetaKind)(i - 1)) : MetaSymbols.StatSprite("damage");
+                string label = i == 0 ? T("trait") : pickingCondition ? KindName((MetaKind)(i - 1)) : T("stat");
+                RectTransform token = Symbol(pane, i * 35, 31, 29, icon, null,
+                    () => { category = filter; query = ""; page = 0; Build(); }, label);
+                if (category == i) Frame(token, 0);
+            }
+            Input(pane, query, T("search_live"), 0, 68, C, value => { query = value; page = 0; BuildPickerResults(); });
+            pickerResults = Box(pane, 0, 96, C, 164, "picker_results");
+            BuildPickerResults();
+        }
+
+        static void BuildPickerResults()
+        {
+            if (pickerResults == null) return;
+            Clear(pickerResults);
+            var choices = new List<Choice>();
+            if (category == 0)
+            {
+                foreach (ActorTrait trait in AssetManager.traits.list)
                 {
-                    MetaKind captured = value; int i = (int)value;
-                    LabelButton(pane, KindName(value), i % 5 * 71, 39 + i / 5 * 20, 68, 18,
-                        () => { pickKind = captured; page = 0; Build(); }, pickKind == value);
+                    ActorTrait entry = trait;
+                    string name = TraitName(entry.id);
+                    if (!Matches(name + " " + entry.id, query)) continue;
+                    choices.Add(new Choice { Name = name, Detail = entry.id, Sprite = entry.getSprite(), Select = () =>
+                    {
+                        if (pickingCondition) { draft.Conditions.Add(new Condition { Trait = entry.id }); selectedCondition = -1; }
+                        else { effect.Kind = EffectKind.Trait; effect.Value = entry.id; }
+                        picking = false; Build();
+                    }});
                 }
-            Input(pane, pickQuery, T("search"), 0, metas ? 87 : 45, Right, s => { pickQuery = s; page = 0; Build(); });
-            var entries = new List<(string label, string detail, Action click)>();
-            if (pickTrait != null)
-                foreach (ActorTrait t in AssetManager.traits.list)
+            }
+            else if (pickingCondition)
+            {
+                MetaKind type = (MetaKind)(category - 1);
+                foreach (MetaHandle value in WorldRules.Metas)
                 {
-                    ActorTrait trait = t;
-                    string label = TraitName(t.id);
-                    if (!Matches(label + " " + t.id, pickQuery)) continue;
-                    entries.Add((label, t.id, () => pickTrait(trait)));
+                    MetaHandle meta = value;
+                    if (meta.Kind != type || !Matches(meta.Name, query)) continue;
+                    choices.Add(new Choice { Name = meta.Name, Detail = KindName(meta.Kind), Meta = meta, Select = () =>
+                    {
+                        draft.Conditions.Add(new Condition { Kind = ConditionKind.Membership, Meta = meta.Kind, MetaId = meta.Id });
+                        selectedCondition = -1; picking = false; Build();
+                    }});
                 }
-            else if (metas)
-                foreach (MetaHandle m in WorldRules.Metas)
-                {
-                    MetaHandle meta = m;
-                    if (m.Kind == pickKind && Matches(m.Name, pickQuery)) entries.Add((m.Name, "#" + m.Id, () => pickMeta(meta)));
-                }
+            }
             else
-                foreach (string stat in WorldRules.AllowedStats)
+            {
+                foreach (string value in WorldRules.AllowedStats)
                 {
-                    string id = stat;
-                    if (Matches(T("stat_" + stat) + " " + stat, pickQuery)) entries.Add((T("stat_" + stat), stat, () => pickStat(id)));
+                    string stat = value;
+                    if (!Matches(T("stat_" + stat), query)) continue;
+                    choices.Add(new Choice { Name = T("stat_" + stat), Detail = T("stat"), Sprite = MetaSymbols.StatSprite(stat), Select = () =>
+                    { effect.Kind = EffectKind.Stat; effect.Value = stat; if (effect.Amount == 0) effect.Amount = 10; picking = false; Build(); }});
                 }
-            entries.Sort((a, b) => string.Compare(a.label, b.label, StringComparison.CurrentCultureIgnoreCase));
-            const int perPage = 40;
-            int pages = Math.Max(1, (entries.Count + perPage - 1) / perPage);
+            }
+            choices.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase));
+            int pages = Math.Max(1, (choices.Count + PageSize - 1) / PageSize);
             page = Math.Min(page, pages - 1);
-            var visible = entries.Skip(page * perPage).Take(perPage).ToList();
-            RectTransform list = Scroll(pane, "picker", 0, listY, Right, 245 - listY, visible.Count * 26);
+            var visible = choices.Skip(page * PageSize).Take(PageSize).ToList();
+            RectTransform grid = Scroll(pickerResults, "symbols", 0, 0, C, 136, ((visible.Count + Columns - 1) / Columns) * 43);
             for (int i = 0; i < visible.Count; i++)
             {
-                var entry = visible[i];
-                RectTransform row = LabelButton(list, Fit(entry.label, 7, Right - 16), 0, i * 26, Right, 24, entry.click);
-                Text(row, entry.detail, 7, 15, Right - 14, 8, 5, Muted, TextAnchor.LowerRight);
+                Choice entry = visible[i];
+                Symbol(grid, 6 + i % Columns * 45, i / Columns * 43, 37, entry.Sprite, entry.Meta, entry.Select, entry.Name, entry.Detail);
             }
-            LabelButton(pane, "‹", 0, 253, 40, 20, () => { page = Math.Max(0, page - 1); Build(); });
-            Text(pane, (page + 1) + " / " + pages, 43, 253, 75, 20, 7, Ink, TextAnchor.MiddleCenter);
-            LabelButton(pane, "›", 121, 253, 40, 20, () => { page = Math.Min(pages - 1, page + 1); Build(); });
-            LabelButton(pane, T("back"), Right - 100, 253, 100, 20, () =>
-            { ClearPicker(); if (effect != null && string.IsNullOrEmpty(effect.Value)) effect = null; Build(); });
+            if (visible.Count == 0) Text(pickerResults, T("no_results"), 0, 45, C, 30, 8, Muted, TextAnchor.MiddleCenter);
+            if (pages > 1)
+            {
+                Small(pickerResults, "‹", C / 2 - 65, 140, 22, () => { page = Math.Max(0, page - 1); BuildPickerResults(); }, T("back"));
+                Text(pickerResults, (page + 1) + " / " + pages, C / 2 - 35, 140, 70, 22, 7, Muted, TextAnchor.MiddleCenter);
+                Small(pickerResults, "›", C / 2 + 43, 140, 22, () => { page = Math.Min(pages - 1, page + 1); BuildPickerResults(); }, T("next"));
+            }
+        }
+
+        static void Save(RuleSet set)
+        {
+            WorldRules.Save(selected, set);
+            selectedCondition = -1; advanced = false;
+            Build();
         }
 
         static bool Matches(string value, string needle) => string.IsNullOrEmpty(needle) || value.IndexOf(needle, StringComparison.CurrentCultureIgnoreCase) >= 0;
 
-        static RectTransform LabelButton(Transform parent, string label, float x, float y, float w, float h, Action click, bool active = false)
+        static RectTransform Symbol(Transform parent, float x, float y, float size, Sprite sprite, MetaHandle meta, Action click, string name, string description = "")
+        {
+            RectTransform token = Button(parent, x, y, size, size, Slot, click);
+            if (meta != null) MetaSymbols.Draw(token, meta, 4, 4, size - 8);
+            else if (sprite != null) Picture(token, sprite, 5, 5, size - 10, size - 10);
+            MetaSymbols.Tip(token, () => name, () => description);
+            return token;
+        }
+
+        static void Badge(RectTransform token, string value)
+        {
+            Rect(token, 0, 22, 32, 11, Hex("#20231f"));
+            Text(token, value, -3, 22, 38, 11, 7, Gold, TextAnchor.MiddleCenter);
+        }
+
+        static RectTransform Small(Transform parent, string text, float x, float y, float size, Action click, string tooltip)
+        {
+            RectTransform button = Label(parent, text, x, y, size, size, click);
+            MetaSymbols.Tip(button, () => tooltip);
+            return button;
+        }
+
+        static RectTransform Label(Transform parent, string text, float x, float y, float w, float h, Action click)
         {
             RectTransform button = Button(parent, x, y, w, h, "ui/special/special_buttonGray", click);
-            if (active) Frame(button, 0);
-            Text(button, label, 2, 0, w - 4, h, 7, active ? Gold : Ink, TextAnchor.MiddleCenter);
+            Text(button, text, 3, 0, w - 6, h, h > 24 ? 10 : 8, Ink, TextAnchor.MiddleCenter);
             return button;
+        }
+
+        static void Footer(RectTransform pane, Action save, Action remove)
+        {
+            if (remove != null) Label(pane, T("remove"), 0, 230, 100, 24, remove);
+            Label(pane, T("save"), C - 125, 230, 125, 24, save);
         }
 
         static void Paragraph(Transform parent, string value, float x, float y, float w, float h)
         {
-            var text = Text(parent, value, x, y, w, h, 7, Muted, TextAnchor.UpperLeft).GetComponent<Text>();
+            Text text = Text(parent, value, x, y, w, h, 8, Muted, TextAnchor.UpperLeft).GetComponent<Text>();
             text.horizontalOverflow = HorizontalWrapMode.Wrap;
         }
 
-        static void Input(Transform parent, string value, string placeholder, float x, float y, float w, Action<string> commit)
+        static void Input(Transform parent, string value, string placeholder, float x, float y, float w, Action<string> change)
         {
-            RectTransform frame = Sliced(parent, Slot, x, y, w, 20);
+            RectTransform frame = Sliced(parent, Slot, x, y, w, 22);
             Image image = frame.GetComponent<Image>(); image.raycastTarget = true;
             InputField input = frame.gameObject.AddComponent<InputField>();
             input.targetGraphic = image;
-            Text text = Text(frame, "", 5, 1, w - 10, 18, 7, Ink, TextAnchor.MiddleLeft).GetComponent<Text>();
-            text.supportRichText = false; text.horizontalOverflow = HorizontalWrapMode.Wrap;
+            Text text = Text(frame, "", 6, 1, w - 12, 20, 8, Ink, TextAnchor.MiddleLeft).GetComponent<Text>();
+            text.supportRichText = false;
+            text.horizontalOverflow = HorizontalWrapMode.Wrap;
             input.textComponent = text;
-            input.placeholder = Text(frame, placeholder, 5, 1, w - 10, 18, 7, Muted, TextAnchor.MiddleLeft).GetComponent<Text>();
+            input.placeholder = Text(frame, placeholder, 6, 1, w - 12, 20, 8, Muted, TextAnchor.MiddleLeft).GetComponent<Text>();
             input.text = value; input.characterLimit = 120;
-            // Commit on Enter/focus loss, preserving keyboard focus while typing.
-            input.onEndEdit.AddListener(s => { if (s != value) commit(s); });
+            input.onValueChanged.AddListener(valueChanged => change(valueChanged));
         }
     }
 }

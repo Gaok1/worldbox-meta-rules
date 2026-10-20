@@ -160,16 +160,41 @@ static class Program
             set = new RuleSet { Declarations = new List<Declaration> { new Declaration { Kind = EffectKind.Stat, Value = "armor", Amount = float.PositiveInfinity } } };
             Assert(!RuleEngine.Valid(set), "infinite stat amount accepted");
         });
-        Test("admission restrictions do not retroactively revoke declarations from existing members", () =>
+        Test("adding requirements marks incompatible existing members for departure and removes their grants", () =>
         {
-            var actor = new Subject(); var ledger = new TraitLedger();
+            var actor = new Subject(); var ledger = new TraitLedger(); actor.Groups[MetaKind.Army] = 10;
             var set = new RuleSet {
-                Restrictions = new List<Restriction> { new Restriction { Conditions = new List<Condition> { new Condition { Trait = "knight" } } } },
                 Declarations = new List<Declaration> { Trait("brave") }
             };
-            Assert(!set.Allows(actor), "non-knight would qualify for entry");
             RuleEngine.Reconcile(actor, RuleEngine.Evaluate(new[] { set }), ledger);
-            Assert(actor.HasTrait("brave"), "existing member lost their declaration");
+            Assert(actor.HasTrait("brave"), "initial declaration missing");
+            set.Restrictions.Add(new Restriction { Conditions = new List<Condition> { new Condition { Trait = "knight" } } });
+            Assert(RuleEngine.RequiresExit(actor, set), "existing member was grandfathered instead of marked for departure");
+            actor.Groups.Remove(MetaKind.Army); // adapter invokes the native departure method
+            RuleEngine.Reconcile(actor, Evaluate(), ledger);
+            Assert(!actor.HasTrait("brave"), "departed member kept the temporary benefit");
+        });
+        Test("ongoing membership permits eligible members and ignores disabled requirements", () =>
+        {
+            var actor = new Subject(); actor.Traits.Add("knight");
+            var set = new RuleSet { Restrictions = new List<Restriction> { new Restriction {
+                Conditions = new List<Condition> { new Condition { Trait = "knight" } }
+            } } };
+            Assert(!RuleEngine.RequiresExit(actor, set), "eligible member was expelled");
+            actor.Traits.Remove("knight"); Assert(RuleEngine.RequiresExit(actor, set), "loss of required trait was ignored");
+            set.Restrictions[0].Enabled = false; Assert(!RuleEngine.RequiresExit(actor, set), "disabled requirement expelled a member");
+            set.Restrictions[0].Enabled = true; set.Enabled = false; Assert(!RuleEngine.RequiresExit(actor, set), "disabled group expelled a member");
+            Assert(!RuleEngine.RequiresExit(actor, null), "meta without rules expelled a member");
+        });
+        Test("losing a required relation invalidates existing membership", () =>
+        {
+            var actor = new Subject(); actor.Groups[MetaKind.Clan] = 42;
+            var set = new RuleSet { Restrictions = new List<Restriction> { new Restriction { Conditions = new List<Condition> {
+                new Condition { Kind = ConditionKind.Membership, Meta = MetaKind.Clan, MetaId = 42 }
+            } } } };
+            Assert(!RuleEngine.RequiresExit(actor, set), "matching clan was rejected");
+            actor.Groups[MetaKind.Clan] = 43;
+            Assert(RuleEngine.RequiresExit(actor, set), "changing clan did not invalidate membership");
         });
         Console.WriteLine(passed + " behavioral tests passed.");
     }

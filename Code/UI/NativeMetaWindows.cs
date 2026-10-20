@@ -37,6 +37,24 @@ namespace MetaRules.UI
             }
         }
 
+        public static void OpenNative(MetaHandle meta)
+        {
+            if (meta == null) return;
+            switch (meta.Kind)
+            {
+                case MetaKind.Army: SelectedMetas.selected_army = (Army)meta.Target; break;
+                case MetaKind.Clan: SelectedMetas.selected_clan = (Clan)meta.Target; break;
+                case MetaKind.Culture: SelectedMetas.selected_culture = (Culture)meta.Target; break;
+                case MetaKind.Religion: SelectedMetas.selected_religion = (Religion)meta.Target; break;
+                case MetaKind.City: SelectedMetas.selected_city = (City)meta.Target; break;
+                case MetaKind.Kingdom: SelectedMetas.selected_kingdom = (Kingdom)meta.Target; break;
+                case MetaKind.Language: SelectedMetas.selected_language = (Language)meta.Target; break;
+                case MetaKind.Family: SelectedMetas.selected_family = (Family)meta.Target; break;
+                case MetaKind.Subspecies: SelectedMetas.selected_subspecies = (Subspecies)meta.Target; break;
+            }
+            ScrollWindow.showWindow(meta.Kind.ToString().ToLowerInvariant());
+        }
+
         public static void Attach(string id)
         {
             if (Selection(id) == null || !ScrollWindow._all_windows.TryGetValue(id, out ScrollWindow window) || window == null) return;

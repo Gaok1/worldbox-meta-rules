@@ -146,7 +146,7 @@ namespace MetaRules.Game
             while (cursor < pending.Count && budget-- > 0)
             {
                 Actor actor = pending[cursor++];
-                if (actor != null && actor.isAlive()) Reconcile(actor);
+                if (actor != null && actor.isAlive()) Reconcile(actor, true);
             }
         }
 
@@ -189,11 +189,17 @@ namespace MetaRules.Game
             return state;
         }
 
-        public static void Reconcile(Actor actor)
+        public static void Reconcile(Actor actor, bool enforceMembership = false)
         {
             if (!Ready || Mutating || actor?.data == null || !actor.isAlive()) return;
             try
             {
+                if (enforceMembership)
+                {
+                    Mutating = true;
+                    EnforceMembership(actor);
+                    Mutating = false;
+                }
                 Evaluation desired = RuleEngine.Evaluate(Applicable(actor));
                 if (desired.Temporary.Count == 0 && desired.Permanent.Count == 0 && desired.Stats.Count == 0 && !actors.ContainsKey(actor.id))
                 {
@@ -213,6 +219,53 @@ namespace MetaRules.Game
             }
             catch (Exception e) { if (broken.Add("actor:" + actor.id)) Report(e); }
             finally { Mutating = false; }
+        }
+
+        // The scan runs after construction/loading, rather than in the middle of a
+        // setter. Use native departure methods so captains, chiefs and rulers update.
+        static void EnforceMembership(Actor actor)
+        {
+            if (actor.asset == null || actor.subspecies == null) return;
+            var subject = new ActorSubject(actor);
+            foreach (MetaKind kind in Enum.GetValues(typeof(MetaKind)))
+            {
+                MetaHandle meta = Member(actor, kind);
+                if (meta == null || !RuleEngine.RequiresExit(subject, Get(meta))) continue;
+                switch (kind)
+                {
+                    case MetaKind.Army:
+                        Army oldArmy = actor.army;
+                        actor.removeFromArmy();
+                        // The native manager rebuilds this cache later. Update the
+                        // departed member now so the army window is correct even paused.
+                        oldArmy.units.Remove(actor);
+                        break;
+                    case MetaKind.Clan:
+                        actor.clan.tryForgetChief(actor);
+                        actor.setClan(null);
+                        break;
+                    case MetaKind.Culture: actor.setCulture(null); break;
+                    case MetaKind.Religion: actor.setReligion(null); break;
+                    case MetaKind.Language: actor.joinLanguage(null); break;
+                    case MetaKind.Family: actor.setFamily(null); break;
+                    case MetaKind.City:
+                    case MetaKind.Kingdom:
+                        actor.removeFromPreviousFaction();
+                        actor.setDefaultKingdom();
+                        break;
+                    case MetaKind.Subspecies:
+                        // A creature cannot have a null subspecies. Transfer only to a
+                        // compatible alternative of its existing species, if one exists.
+                        foreach (Subspecies alternative in World.world.subspecies)
+                        {
+                            if (alternative == actor.subspecies || alternative.data.species_id != actor.subspecies.data.species_id) continue;
+                            if (RuleEngine.RequiresExit(subject, Get(Handle(kind, alternative, alternative.data)))) continue;
+                            actor.setSubspecies(alternative);
+                            break;
+                        }
+                        break;
+                }
+            }
         }
 
         static bool SameStats(Dictionary<string, float> a, Dictionary<string, float> b)
@@ -237,7 +290,8 @@ namespace MetaRules.Game
         public static bool Allows(Actor actor, MetaHandle target)
         {
             if (!Ready || Mutating || actor == null || target == null || actor.data == null) return true;
-            // Existing members are grandfathered; removing membership is always permitted.
+            // Same-target setter calls are harmless; the scan separately enforces
+            // ongoing eligibility. Removing membership is always permitted.
             if (Member(actor, target.Kind)?.Id == target.Id) return true;
             RuleSet set = Get(target);
             if (set == null || set.Allows(new ActorSubject(actor))) return true;

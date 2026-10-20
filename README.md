@@ -8,11 +8,13 @@ Built for WorldBox 0.51.2 / build 719 with [NeoModLoader](https://github.com/Wor
 
 ## Open the editor
 
-Open the normal details window for a specific meta, then click its **Meta Rules** tab (the options icon). The editor opens for that exact instance. You can also browse individual metas from the Meta Rules power tab.
+Open the normal details window for a specific meta, then click its **Rules** tab (the options icon). The editor opens for that exact instance, showing its own banner and name. There is no global meta browser or type selection step.
 
-- **Restrict:** require traits or membership in another specific meta. Combine conditions with ALL / ANY and optionally NOT. All enabled restrictions must pass.
-- **Declare:** give members a trait, temporarily or permanently, or add a stat bonus for the duration of membership.
-- **Overview:** see member counts, existing members who do not meet admission conditions, and enable/disable this meta's rules.
+- **Declarations** and **Requirements** are visible together, each with one add button.
+- Rules use trait icons and individual meta banners. Hover for names and explanations; click a symbol to edit it. Options such as ALL / ANY, NOT and enable/disable live inside the rule editor.
+- Requirements can demand traits or membership in another specific meta. All enabled requirements must pass, for existing members as well as new admissions.
+- Declarations grant temporary/permanent actor traits or membership-based additive stat bonuses.
+- The footer shows member counts and incompatibilities. The options menu contains the master enable/disable setting.
 
 Examples:
 
@@ -29,8 +31,9 @@ Trait selection includes traits registered by other mods. UI text is available i
 - A temporary trait disappears when its last active source disappears. A trait that existed before the grant, or was independently granted later, is retained. Permanent grants are never automatically revoked.
 - Opposite traits are not forcibly removed. A conflicting declaration may remain unapplied until the conflict goes away.
 - Stat bonuses from different declarations add together; they do not accumulate every update. Supported stats: health, damage, armor, speed, attack speed, intelligence, warfare, diplomacy and stewardship. A health bonus changes capacity, not a direct heal.
-- Restrictions govern **future admissions**. Existing members remain; the overview reports their violations. There is no automatic expulsion.
-- City admission checks the city and its kingdom together. Conquest-induced kingdom changes are allowed so residents never end up belonging to a different kingdom from their city. Initial subspecies assignment is also allowed so newborn creatures can initialize correctly. Both cases remain visible to membership auditing.
+- Requirements are enforced **continuously**, in the same bounded scan used for declarations. Incompatible existing members leave; losing a required trait or relation also triggers departure. In an army this includes the captain, and departing members are immediately removed from its displayed roster. Configured armies retain their rules if empty while their kingdom exists.
+- City admission checks the city and its kingdom together. Expulsion from a city or kingdom uses native faction departure, ending army service and city citizenship and returning the unit to its default neutral/wild kingdom. Conquest first keeps political pointers consistent; eligibility is enforced during the next scan.
+- A creature cannot have a null subspecies. An incompatible member transfers only to an eligible alternative of the same species. Without an alternative it remains, visibly counted as incompatible. Initial subspecies assignment is allowed so newborn creatures initialize correctly.
 - Admission checks use current membership and traits; joining a group cannot qualify itself by the trait that group would grant afterward.
 - Conditions reference another meta; declarations currently grant actor traits and stats. They do not automatically transfer actors between clans, cultures or other metas.
 
@@ -53,6 +56,6 @@ python3 tools/package.py
 
 On Linux the project defaults to `~/.local/share/Steam/steamapps/common/worldbox/worldbox_Data`. Build references use the game's installed assemblies and NML publicized assembly; proprietary game binaries are not distributed.
 
-Engine tests cover individual meta identity, admission logic, overlapping trait sources, permanent grants, provenance after save/load, and additive stats. Local compilation has been checked against the installed game. **In-game loading, tab placement and interaction with Frontiers/Diplomacy Overhaul still need a playtest.**
+Engine tests cover individual meta identity, admission/continued-membership decisions, overlapping trait sources, permanent grants, provenance after save/load, and additive stats. Local compilation has been checked against the installed game. Version 0.1.0 was confirmed loaded in the game log; **the redesigned 0.2.0 interface and departure behavior still need a playtest.**
 
 MIT. See [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) for UI attribution.

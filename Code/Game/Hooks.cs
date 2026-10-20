@@ -3,6 +3,19 @@ using MetaRules.Core;
 
 namespace MetaRules.Game
 {
+    [HarmonyPatch(typeof(Army), nameof(Army.isReadyForRemoval))]
+    static class KeepConfiguredArmy
+    {
+        static bool Prefix(Army __instance, ref bool __result)
+        {
+            if (__instance.data == null || __instance.getKingdom() == null || __instance.getKingdom().isRekt()) return true;
+            RuleSet set = WorldRules.Get(WorldRules.Handle(MetaKind.Army, __instance, __instance.data));
+            if (set == null || set.Restrictions.Count == 0 && set.Declarations.Count == 0) return true;
+            __result = false;
+            return false;
+        }
+    }
+
     // Setter guards cover native and mod callers. The city/kingdom pair is checked
     // together before joining, so a blocked move never splits political membership.
     [HarmonyPatch(typeof(Actor), nameof(Actor.setArmy))]

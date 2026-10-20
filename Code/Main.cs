@@ -14,7 +14,7 @@ namespace MetaRules
             new Harmony("gaok1.meta_rules").PatchAll(typeof(Main).Assembly);
             gameObject.AddComponent<RuleLoop>();
             RulesWindow.Init();
-            LogInfo("Meta Rules 0.1.0 loaded");
+            LogInfo("Meta Rules 0.2.0 loaded");
         }
     }
 
@@ -30,6 +30,7 @@ namespace MetaRules
                 if (Time.realtimeSinceStartup >= nextUi)
                 {
                     NativeMetaWindows.RefreshOpenWindow();
+                    RulesWindow.Tick();
                     nextUi = Time.realtimeSinceStartup + 0.5f;
                 }
             }

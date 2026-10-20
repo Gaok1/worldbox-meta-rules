@@ -98,6 +98,8 @@ namespace MetaRules.Core
 
     public static class RuleEngine
     {
+        public static bool RequiresExit(ISubject subject, RuleSet set) => set != null && !set.Allows(subject);
+
         public static bool Valid(RuleSet set)
         {
             if (set == null || set.Version != 1 || set.Restrictions == null || set.Declarations == null) return false;
