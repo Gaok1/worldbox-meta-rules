@@ -19,6 +19,7 @@ def load(path):
 metadata = load(ROOT / "mod.json")
 assert metadata["GUID"] == "gaok1.meta_rules"
 assert re.fullmatch(r"\d+\.\d+\.\d+", metadata["version"])
+assert (ROOT / metadata["iconPath"]).is_file(), "Mod icon missing"
 en = load(ROOT / "Locales/en.json")
 br = load(ROOT / "Locales/br.json")
 # The game has separate Brazilian ("br") and European ("pt") Portuguese; both use the pt-BR text.

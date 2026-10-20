@@ -4,6 +4,7 @@
   "version": "0.3.0",
   "description": "Restrict membership and declare traits, equipment or stat bonuses for armies, clans, cultures, religions, cities, kingdoms, languages, families and subspecies.",
   "GUID": "gaok1.meta_rules",
+  "iconPath": "icon.png",
   "RepoUrl": "https://github.com/Gaok1/worldbox-meta-rules",
   "targetGameBuild": 719,
   "UsePublicizedAssembly": true,

@@ -1,5 +1,7 @@
 # Meta Rules for WorldBox
 
+![Meta Rules](metaRules.png)
+
 [Português (Brasil)](README.pt-BR.md)
 
 Define who may join **one particular group**, and what its members receive. Rules belong to individual armies, clans, cultures, religions, cities, kingdoms, languages, families and subspecies—not to every group of the same type.
