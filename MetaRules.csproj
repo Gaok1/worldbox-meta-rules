@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <NoStdLib>true</NoStdLib>
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GameData Condition="'$(GameData)' == ''">$(HOME)/.local/share/Steam/steamapps/common/worldbox/worldbox_Data</GameData>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Code/**/*.cs" />
+    <Reference Include="$(GameData)/Managed/*.dll" Exclude="$(GameData)/Managed/Assembly-CSharp.dll" Private="false" />
+    <Reference Include="$(GameData)/StreamingAssets/mods/NML/Assembly-CSharp-Publicized.dll" Private="false" />
+    <Reference Include="$(GameData)/StreamingAssets/mods/NeoModLoader.dll" Private="false" />
+    <Reference Include="$(GameData)/StreamingAssets/mods/NML/Assemblies/0Harmony.dll" Private="false" />
+  </ItemGroup>
+  <Target Name="CheckGame" BeforeTargets="ResolveReferences">
+    <Error Condition="!Exists('$(GameData)/Managed/Assembly-CSharp.dll')" Text="Set GameData to the WorldBox worldbox_Data directory." />
+  </Target>
+</Project>
