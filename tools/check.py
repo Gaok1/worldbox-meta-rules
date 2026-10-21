@@ -27,10 +27,16 @@ br = load(ROOT / "Locales/br.json")
 pt = load(ROOT / "Locales/pt.json")
 assert en.keys() == br.keys(), "Locale keys differ"
 assert pt == br, "Locales/pt.json must be a copy of Locales/br.json"
+config = load(ROOT / "default_config.json")
+option = config["mr_settings"][0]
+assert option["Id"] == "mr_override_cultural_block" and option["Type"] == "SWITCH"
+assert option["BoolVal"] is False, "Existing behavior must remain the default"
+assert "mr_settings" in en and option["Id"] in en and option["Id"] + " Description" in en
+assert '"default_config.json"' in (ROOT / "tools/package.py").read_text(), "Package must include settings"
 assert all(isinstance(value, str) and value.strip() for value in [*en.values(), *br.values()])
 keys = set()
 for path in (ROOT / "Code").rglob("*.cs"):
-    keys.update("mr_" + key for key in re.findall(r'\bT\("([a-z_]+)"\)', path.read_text()))
+    keys.update("mr_" + key for key in re.findall(r'\bT\("([a-z_]+)"\)', path.read_text(encoding="utf-8")))
 # Prefixes are completed dynamically by enum/stat selectors.
 keys -= {"mr_stat_", "mr_kind_"}
 assert keys <= en.keys(), f"Missing translations: {keys - en.keys()}"

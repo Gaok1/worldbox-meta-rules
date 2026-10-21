@@ -43,7 +43,11 @@ O equipamento é entregue **uma vez por pertencimento**, substituindo o item daq
 
 ### Membros
 
-A página **Membros** lista as criaturas do meta (com busca; clique no nome para abrir). **Remover** expulsa aquele indivíduo e o mantém fora enquanto as regras estiverem ativas; **Readmitir** desfaz.
+A página **Membros** lista as criaturas do meta (com busca; clique no nome para abrir). **Adicionar membros** busca criaturas vivas por nome ou ID e transfere a selecionada para este meta, respeitando exigências e limites do jogo. Família e subespécie só permitem transferência dentro da mesma espécie; mudar de família não altera pais/ascendência. **Remover** expulsa e mantém fora enquanto as regras estiverem ativas. **Readmitir** retira esse bloqueio; depois use **Adicionar** para trazer de volta imediatamente.
+
+### Configurações do mod
+
+Abra **Configurações do mod** no editor ou nas opções do Meta Rules no NeoModLoader. **Ignorar bloqueios de conversão cultural** é global, persistente e desativada por padrão. Ativada, declarações e adições manuais podem superar `true_roots` (True Roots), mas continuam respeitando suas exigências, remoções e limites estruturais do jogo. A conversão natural do jogo não muda. Desativar não desfaz transferências já realizadas; a alteração vale nas próximas verificações.
 
 ### Detalhes e opções
 

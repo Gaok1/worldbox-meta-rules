@@ -1,0 +1,10 @@
+{
+  "mr_settings": [
+    {
+      "Id": "mr_override_cultural_block",
+      "Type": "SWITCH",
+      "IconPath": "ui/Icons/iconCulture",
+      "BoolVal": false
+    }
+  ]
+}

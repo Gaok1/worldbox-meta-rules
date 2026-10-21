@@ -29,8 +29,9 @@ namespace MetaRules.UI
         static Restriction draft;
         static Declaration effect;
         static int selectedCondition = -1;
-        static bool picking, pickingCondition, help, members;
+        static bool picking, pickingCondition, help, members, addingMembers;
         static string memberQuery = "";
+        static string memberFeedback = "";
         static NativeUi.Group memberList;
         static bool confirmEmpty;
         static int category;
@@ -102,6 +103,7 @@ namespace MetaRules.UI
         {
             draft = null; effect = null; selectedCondition = -1;
             picking = false; help = false; members = false; query = ""; memberQuery = "";
+            addingMembers = false; memberFeedback = "";
         }
 
         static void Create()
@@ -292,6 +294,8 @@ namespace MetaRules.UI
             float peopleW = NativeUi.MakeList(people, 2f);
             Label(people.Grid, T("manage_members") + (removed > 0 ? "  ·  " + removed + " " + T("removed").ToLowerInvariant() : "") + "  ›",
                 0, 0, peopleW, 18, () => { ResetEditor(); members = true; Build(); });
+            Label(people.Grid, T("settings"), 0, 0, peopleW, 18,
+                () => NeoModLoader.ui.ModConfigureWindow.ShowWindow(Main.Instance.GetConfig()));
         }
 
         static RectTransform DeclarationToken(Transform parent, Declaration d, Action click, bool marked)
@@ -835,15 +839,18 @@ namespace MetaRules.UI
             return groups;
         }
 
-        // ── Members: individuals of this meta, removable one by one.
+        // ── Members: add or remove individuals, reusing the same admission planner.
         const int MemberRows = 200;
 
         static void BuildMembers()
         {
-            RectTransform head = Block(42, "members");
+            RectTransform head = Block(64, "members");
             EditorHeader(head, T("members"), () => { members = false; Build(); });
-            Input(head, memberQuery, T("search_live"), 0, 22, CW, 17, value => { memberQuery = value; FillMembers(); });
-            memberList = NativeUi.CreateGroup(content, T("members"), HeaderGold);
+            Segment(head, 0, 22, CW, new[] { T("members"), T("add_members") }, addingMembers ? 1 : 0,
+                i => { addingMembers = i == 1; memberQuery = ""; memberFeedback = ""; });
+            Input(head, memberQuery, T("search_live"), 0, 44, CW, 17, value => { memberQuery = value; FillMembers(); });
+            if (!string.IsNullOrEmpty(memberFeedback)) Hint(memberFeedback);
+            memberList = NativeUi.CreateGroup(content, T(addingMembers ? "add_members" : "members"), HeaderGold);
             NativeUi.MakeList(memberList, 2f);
             FillMembers();
 
@@ -871,8 +878,10 @@ namespace MetaRules.UI
         {
             if (memberList == null) return;
             Clear(memberList.Grid);
-            List<Actor> all = WorldRules.Members(selected);
-            var matching = all.Where(a => Matches(a.getName() ?? "", memberQuery)).OrderBy(a => a.getName()).ToList();
+            List<Actor> all = addingMembers
+                ? World.world.units.getSimpleList().Where(a => a != null && a.isAlive() && WorldRules.Member(a, selected.Kind)?.Id != selected.Id).ToList()
+                : WorldRules.Members(selected);
+            var matching = all.Where(a => Matches((a.getName() ?? "") + " #" + a.id, memberQuery)).OrderBy(a => a.getName()).ToList();
             if (memberList.Counter != null) memberList.Counter.text = all.Count.ToString();
             float rowW = Mathf.Min(CW, ((RectTransform)memberList.Grid).rect.width > 1 ? ((RectTransform)memberList.Grid).rect.width : CW) - 8;
             foreach (Actor value in matching.Take(MemberRows))
@@ -883,7 +892,18 @@ namespace MetaRules.UI
                 RectTransform open = Button(row, 22, 0, rowW - 86, 22, null, () => { SelectedUnit.select(actor); ScrollWindow.showWindow("unit"); });
                 Text(open, Fit(actor.getName() ?? "#" + actor.id, 7, rowW - 86), 0, 0, rowW - 86, 22, 7, Ink, TextAnchor.MiddleLeft);
                 MetaSymbols.Tip(open, () => actor.getName(), () => T("open_unit"));
-                Label(row, T("remove"), rowW - 62, 2, 60, 18, () => { WorldRules.Remove(selected, actor); Build(); }, Red);
+                if (addingMembers)
+                {
+                    bool allowed = WorldRules.CanAdd(selected, actor);
+                    RectTransform add = Label(row, T("add"), rowW - 62, 2, 60, 18, () =>
+                    {
+                        memberFeedback = T(WorldRules.TryAdd(selected, actor) ? "member_added" : "member_add_blocked");
+                        Build();
+                    });
+                    add.GetComponent<UnityEngine.UI.Button>().interactable = allowed;
+                    if (!allowed) { Fade(add); MetaSymbols.Tip(add, () => T("member_add_blocked")); }
+                }
+                else Label(row, T("remove"), rowW - 62, 2, 60, 18, () => { WorldRules.Remove(selected, actor); Build(); }, Red);
             }
             if (matching.Count > MemberRows)
                 Text(Box(memberList.Grid, 0, 0, rowW, 16, "more"), string.Format(T("showing"), MemberRows, matching.Count), 0, 0, rowW, 16, 6, Muted, TextAnchor.MiddleCenter);

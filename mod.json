@@ -1,7 +1,7 @@
 {
   "name": "Meta Rules",
   "author": "Gaok1",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Restrict membership and declare traits, equipment or stat bonuses for armies, clans, cultures, religions, cities, kingdoms, languages, families and subspecies.",
   "GUID": "gaok1.meta_rules",
   "iconPath": "icon.png",

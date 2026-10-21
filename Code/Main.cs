@@ -9,12 +9,16 @@ namespace MetaRules
 {
     public class Main : BasicMod<Main>
     {
+        ModConfigItem overrideCulturalBlock;
+        public static bool OverrideCulturalBlock => Instance?.overrideCulturalBlock?.BoolVal == true;
+
         protected override void OnModLoad()
         {
+            overrideCulturalBlock = GetConfig()["mr_settings"]["mr_override_cultural_block"];
             new Harmony("gaok1.meta_rules").PatchAll(typeof(Main).Assembly);
             gameObject.AddComponent<RuleLoop>();
             RulesWindow.Init();
-            LogInfo("Meta Rules 0.4.0 loaded");
+            LogInfo("Meta Rules 0.5.0 loaded");
         }
     }
 

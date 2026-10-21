@@ -332,6 +332,43 @@ static class Program
                 new Condition { Kind = ConditionKind.Membership, Meta = MetaKind.Army, MetaId = 5 } } } } };
             Assert(!RuleEngine.CanMove(actor, sameKingdom, new RuleSet[0], new[] { religionNeedsArmy }), "leaving the army was not considered");
         });
+        Test("a clan's granted genius satisfies a language requirement without bypassing bans", () =>
+        {
+            var actor = new Subject();
+            actor.Groups[MetaKind.Clan] = 10; actor.Groups[MetaKind.Culture] = 5; actor.Groups[MetaKind.Language] = 6;
+            var clan = new RuleSet {
+                Restrictions = new List<Restriction> { new Restriction { Conditions = new List<Condition> {
+                    new Condition { Kind = ConditionKind.Membership, Meta = MetaKind.Culture, MetaId = 5 } } } },
+                Declarations = new List<Declaration> { Trait("genius") }
+            };
+            var language = new RuleSet { Restrictions = new List<Restriction> { new Restriction {
+                Conditions = new List<Condition> { new Condition { Trait = "genius" } } } } };
+            var ledger = new TraitLedger();
+            Assert(!RuleEngine.CanJoin(actor, MetaKind.Language, 5, language, new[] { clan }), "missing trait accepted");
+            RuleEngine.Reconcile(actor, RuleEngine.Evaluate(new[] { clan }), ledger);
+            Assert(RuleEngine.CanJoin(actor, MetaKind.Language, 5, language, new[] { clan }), "clan's trait was ignored");
+            language.Banned.Add(actor.Id);
+            Assert(!RuleEngine.CanJoin(actor, MetaKind.Language, 5, language, new[] { clan }), "removal was ignored");
+            language.Banned.Remove(actor.Id);
+            actor.Groups[MetaKind.Culture] = 6;
+            Assert(!RuleEngine.CanJoin(actor, MetaKind.Language, 5, language, new[] { clan }), "kept clan requirement was ignored");
+        });
+        Test("manual membership admission validates every meta type and readmission", () =>
+        {
+            foreach (MetaKind kind in Enum.GetValues(typeof(MetaKind)))
+            {
+                var actor = new Subject(); actor.Groups[kind] = 1;
+                var target = new RuleSet { Banned = new List<long> { actor.Id }, Restrictions = new List<Restriction> {
+                    new Restriction { Conditions = new List<Condition> { new Condition { Trait = "genius" } } } } };
+                actor.Traits.Add("genius");
+                Assert(!RuleEngine.CanJoin(actor, kind, 2, target, new RuleSet[0]), "banned candidate accepted: " + kind);
+                target.Banned.Remove(actor.Id);
+                Assert(RuleEngine.CanJoin(actor, kind, 2, target, new RuleSet[0]), "eligible candidate rejected: " + kind);
+                Assert(actor.MemberOf(kind) == 1, "admission preview mutated membership");
+                actor.Traits.Clear();
+                Assert(!RuleEngine.CanJoin(actor, kind, 2, target, new RuleSet[0]), "readmission bypassed requirements: " + kind);
+            }
+        });
         Console.WriteLine(passed + " behavioral tests passed.");
     }
 }

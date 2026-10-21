@@ -361,9 +361,9 @@ namespace MetaRules.Game
         }
 
         // What joining would take for this creature, or null when it is not allowed.
-        static Action Plan(Actor actor, MetaKind kind, long id)
+        static Action Plan(Actor actor, MetaKind kind, long id, bool manual = false)
         {
-            if (Member(actor, kind)?.Id == id || actor.subspecies == null || actor.asset == null || actor.asset.is_boat) return null;
+            if (actor?.data == null || !actor.isAlive() || Member(actor, kind)?.Id == id || actor.subspecies == null || actor.asset == null || actor.asset.is_boat) return null;
             MetaHandle target = Find(kind, id);
             if (target == null) return null;
             var subject = new ActorSubject(actor);
@@ -372,6 +372,14 @@ namespace MetaRules.Game
             Action apply;
             switch (target.Target)
             {
+                case Family family when manual:
+                    if (family.data.species_id != actor.subspecies.data.species_id) return null;
+                    apply = () => actor.setFamily(family);
+                    break;
+                case Subspecies subspecies when manual:
+                    if (subspecies.data.species_id != actor.subspecies.data.species_id) return null;
+                    apply = () => actor.setSubspecies(subspecies);
+                    break;
                 case Language language:
                     if (!Convertible(actor) || !actor.subspecies.has_advanced_communication) return null;
                     apply = () => actor.joinLanguage(language);
@@ -429,7 +437,8 @@ namespace MetaRules.Game
             return RuleEngine.CanMove(subject, changes, targets, kept) ? apply : null;
         }
 
-        static bool Convertible(Actor actor) => !actor.hasCulture() || actor.culture.isPossibleToConvertToOtherMeta();
+        // Only explicit mod actions use this setting; native conversion remains untouched.
+        static bool Convertible(Actor actor) => Main.OverrideCulturalBlock || !actor.hasCulture() || actor.culture.isPossibleToConvertToOtherMeta();
 
         static IEnumerable<City> Candidates(Kingdom kingdom)
         {
@@ -501,6 +510,29 @@ namespace MetaRules.Game
             foreach (Actor actor in World.world.units.getSimpleList())
                 if (actor != null && actor.isAlive() && Member(actor, target.Kind)?.Id == target.Id) result.Add(actor);
             return result;
+        }
+
+        public static bool CanAdd(MetaHandle meta, Actor actor) => Ready && !Mutating && meta != null &&
+            ReferenceEquals(world, World.world?.map_stats) && Find(meta.Kind, meta.Id)?.Target == meta.Target &&
+            Plan(actor, meta.Kind, meta.Id, true) != null && !IsBroken(meta);
+
+        // Reuse the declaration planner: manual additions obey requirements, bans and
+        // native structural limits too. Revalidate on click rather than trusting the UI.
+        public static bool TryAdd(MetaHandle meta, Actor actor)
+        {
+            if (!CanAdd(meta, actor)) return false;
+            try
+            {
+                Action apply = Plan(actor, meta.Kind, meta.Id, true);
+                if (apply == null) return false;
+                Mutating = true;
+                apply();
+            }
+            catch (Exception e) { Report(e); return false; }
+            finally { Mutating = false; }
+            Reconcile(actor);
+            RescanSoon();
+            return Member(actor, meta.Kind)?.Id == meta.Id;
         }
 
         // Removing an individual bans it from this meta and expels it now.

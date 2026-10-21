@@ -17,7 +17,8 @@ Open the normal details window for a specific meta, then click its **Rules** tab
 - The window has the size of the game's own editors and uses their scroll view, scrollbar, trait/item buttons and meta banners. The picker follows the native trait and equipment editors (same groups, colors and order) and scrolls continuously; typing filters it.
 - Requirements can demand traits or membership in another specific meta. All enabled requirements must pass, for existing members as well as new admissions.
 - Declarations grant temporary/permanent actor traits, temporary/permanent equipment, membership-based additive stat bonuses, or **membership in another group** ("everyone in this kingdom speaks Latin").
-- **Members** lists the creatures of the meta; remove a specific individual to expel it and keep it out (undo with *Allow back*).
+- **Members** lists the creatures of the meta. **Add members** searches living creatures by name/ID and transfers one into the selected group, respecting requirements and game limits. Manual family/subspecies transfers require the same species; family transfers do not rewrite ancestry. Remove expels and bans; *Allow back* lifts the ban, then *Add* returns the creature immediately.
+- **Mod settings** opens the native NML configuration. **Override cultural conversion blocks** is global, persistent and off by default. Enable it to let declarations/manual additions override `true_roots` (True Roots), without bypassing requirements, removals or structural game limits. Native conversions are unchanged. Disabling it does not undo completed transfers.
 - The header shows member counts, incompatibilities and the Active/Paused switch for the whole meta. The **?** page explains every behavior.
 
 Examples:

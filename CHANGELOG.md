@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0
+
+- Add living creatures from the Members page, with name/ID search and revalidated admission checks. All nine meta types are supported; manual family/subspecies transfers stay within the same species, and family transfers do not rewrite ancestry. Requirements, bans and structural limits remain enforced. Allow back lifts a removal; Add performs the actual transfer.
+- Add a persistent global NML setting to override cultural conversion blocks such as `true_roots` for declarations and manual additions. Off by default; native conversions and configured requirements remain unchanged. Includes a Mod settings shortcut in the rules window. Disabling the setting does not undo completed transfers.
+
 ## 0.4.0
 
 - Declare group memberships: "everyone in this kingdom speaks Latin", "every clan member serves in this army and lives in that city". Members are made to join a specific language, culture, religion, clan, kingdom, city or army, only when the game allows it (advanced creatures; clan capacity and species; cultures that forbid conversion; cities that welcome the creature; kings and city leaders stay; armies take residents of their city as warriors within the limit) and when no requirement of the target or of any group they keep would be broken. Moves that change several memberships (city → kingdom, leaving the old army) are checked as a whole. Cities and armies are listed for the selected meta's kingdom, or grouped per kingdom. Families and subspecies cannot be granted.
