@@ -20,6 +20,7 @@ namespace MetaRules.Game
     {
         readonly Actor actor;
         public ActorSubject(Actor value) { actor = value; }
+        public long Id => actor.id;
         public long MemberOf(MetaKind kind) => WorldRules.Member(actor, kind)?.Id ?? -1;
         public bool HasTrait(string id) => actor.hasTrait(id);
         public bool AddTrait(string id)
@@ -137,6 +138,7 @@ namespace MetaRules.Game
             try
             {
                 var value = JsonConvert.DeserializeObject<RuleSet>(json);
+                if (value != null && value.Banned == null) value.Banned = new List<long>();
                 if (!RuleEngine.Valid(value))
                     throw new InvalidOperationException("Unsupported rule data: " + meta.Key);
                 rules[meta.Key] = value;
@@ -248,6 +250,7 @@ namespace MetaRules.Game
                 {
                     Mutating = true;
                     EnforceMembership(actor);
+                    GrantMemberships(actor);
                     Mutating = false;
                 }
                 Evaluation desired = RuleEngine.Evaluate(Applicable(actor));
@@ -316,6 +319,205 @@ namespace MetaRules.Game
                         break;
                 }
             }
+        }
+
+        public static MetaHandle Find(MetaKind kind, long id)
+        {
+            MetaHandle meta;
+            switch (kind)
+            {
+                case MetaKind.Army: { Army m = World.world.armies.get(id); meta = Handle(kind, m, m?.data); break; }
+                case MetaKind.Clan: { Clan m = World.world.clans.get(id); meta = Handle(kind, m, m?.data); break; }
+                case MetaKind.Culture: { Culture m = World.world.cultures.get(id); meta = Handle(kind, m, m?.data); break; }
+                case MetaKind.Religion: { Religion m = World.world.religions.get(id); meta = Handle(kind, m, m?.data); break; }
+                case MetaKind.City: { City m = World.world.cities.get(id); meta = Handle(kind, m, m?.data); break; }
+                case MetaKind.Kingdom: { Kingdom m = World.world.kingdoms.get(id); meta = Handle(kind, m, m?.data); break; }
+                case MetaKind.Language: { Language m = World.world.languages.get(id); meta = Handle(kind, m, m?.data); break; }
+                case MetaKind.Family: { Family m = World.world.families.get(id); meta = Handle(kind, m, m?.data); break; }
+                case MetaKind.Subspecies: { Subspecies m = World.world.subspecies.get(id); meta = Handle(kind, m, m?.data); break; }
+                default: return null;
+            }
+            return meta != null && meta.Target is NanoObject nano && !nano.isRekt() ? meta : null;
+        }
+
+        // Declared memberships ("everyone in this kingdom speaks Latin", "every clan member serves
+        // in this army and lives in that city"). A grant only happens when the game itself would
+        // allow it and no requirement — of the target or of any group the creature stays in —
+        // would be broken by it. Cities and kingdoms go first, so an army in the granted city works.
+        static readonly MetaKind[] GrantOrder =
+        { MetaKind.City, MetaKind.Kingdom, MetaKind.Army, MetaKind.Clan, MetaKind.Culture, MetaKind.Religion, MetaKind.Language };
+
+        static void GrantMemberships(Actor actor)
+        {
+            Evaluation desired = RuleEngine.Evaluate(Applicable(actor));
+            if (desired.Metas.Count == 0) return;
+            foreach (MetaKind kind in GrantOrder)
+            {
+                if (!desired.Metas.TryGetValue(kind, out long id)) continue;
+                // A granted city already decides the kingdom; never let the two pull apart.
+                if (kind == MetaKind.Kingdom && desired.Metas.ContainsKey(MetaKind.City)) continue;
+                Plan(actor, kind, id)?.Invoke();
+            }
+        }
+
+        // What joining would take for this creature, or null when it is not allowed.
+        static Action Plan(Actor actor, MetaKind kind, long id)
+        {
+            if (Member(actor, kind)?.Id == id || actor.subspecies == null || actor.asset == null || actor.asset.is_boat) return null;
+            MetaHandle target = Find(kind, id);
+            if (target == null) return null;
+            var subject = new ActorSubject(actor);
+            var changes = new Dictionary<MetaKind, long> { { kind, id } };
+            var targets = new List<RuleSet> { Get(target) };
+            Action apply;
+            switch (target.Target)
+            {
+                case Language language:
+                    if (!Convertible(actor) || !actor.subspecies.has_advanced_communication) return null;
+                    apply = () => actor.joinLanguage(language);
+                    break;
+                case Culture culture:
+                    if (!Convertible(actor) || !actor.subspecies.has_advanced_memory) return null;
+                    apply = () =>
+                    {
+                        bool converted = actor.hasCulture();
+                        actor.setCulture(culture);
+                        if (converted) culture.countConversion();
+                    };
+                    break;
+                case Religion religion:
+                    if (!Convertible(actor) || !actor.subspecies.has_advanced_memory) return null;
+                    apply = () => { actor.setReligion(religion); religion.countConversion(); };
+                    break;
+                case Clan clan:
+                    if (!Convertible(actor) || !actor.subspecies.has_advanced_memory || clan.isFull() || actor.isKing() ||
+                        !string.IsNullOrEmpty(clan.data.original_actor_asset) && clan.data.original_actor_asset != actor.asset.id) return null;
+                    apply = () => { actor.clan?.tryForgetChief(actor); actor.setClan(clan); };
+                    break;
+                case City city:
+                    if (!CanMoveTo(actor, city)) return null;
+                    AddMove(actor, city, changes, targets);
+                    apply = () => MoveTo(actor, city);
+                    break;
+                case Kingdom kingdom:
+                    // Live in the capital, or any city of the kingdom that accepts the creature.
+                    City home = null;
+                    foreach (City candidate in Candidates(kingdom))
+                        if (CanMoveTo(actor, candidate)) { home = candidate; break; }
+                    if (home == null) return null;
+                    changes.Clear();
+                    AddMove(actor, home, changes, targets);
+                    apply = () => MoveTo(actor, home);
+                    break;
+                case Army army:
+                    // Armies belong to one city: only its residents can serve, as warriors.
+                    City barracks = army.getCity();
+                    if (barracks == null || actor.city != barracks || actor.isKing() || actor.isCityLeader() || actor.isBaby()) return null;
+                    bool warrior = actor.isWarrior();
+                    if (!warrior && !barracks.checkCanMakeWarrior(actor)) return null;
+                    apply = () =>
+                    {
+                        if (!actor.isWarrior()) barracks.makeWarrior(actor);
+                        actor.setArmy(army);
+                    };
+                    break;
+                default: return null;
+            }
+            var kept = new List<RuleSet>();
+            foreach (MetaKind other in Enum.GetValues(typeof(MetaKind)))
+                if (!changes.ContainsKey(other)) kept.Add(Get(Member(actor, other)));
+            return RuleEngine.CanMove(subject, changes, targets, kept) ? apply : null;
+        }
+
+        static bool Convertible(Actor actor) => !actor.hasCulture() || actor.culture.isPossibleToConvertToOtherMeta();
+
+        static IEnumerable<City> Candidates(Kingdom kingdom)
+        {
+            if (kingdom.capital != null && kingdom.capital.isAlive()) yield return kingdom.capital;
+            foreach (City city in kingdom.getCities()) if (city != kingdom.capital) yield return city;
+        }
+
+        // The game's hard rules for changing city (City.isPossibleToJoin without its
+        // "only move to smaller cities" migration heuristic).
+        static bool CanMoveTo(Actor actor, City city)
+        {
+            if (city == null || !city.isAlive() || city == actor.city || !actor.isSapient()) return false;
+            if (actor.city != null && (actor.isKing() || actor.isCityLeader())) return false;
+            return city.isNeutral() || city.isWelcomedToJoin(actor);
+        }
+
+        static void AddMove(Actor actor, City city, Dictionary<MetaKind, long> changes, List<RuleSet> targets)
+        {
+            changes[MetaKind.City] = city.id;
+            if (city.kingdom != null)
+            {
+                changes[MetaKind.Kingdom] = city.kingdom.id;
+                targets.Add(Get(Handle(MetaKind.Kingdom, city.kingdom, city.kingdom.data)));
+            }
+            targets.Add(Get(Handle(MetaKind.City, city, city.data)));
+            if (actor.army != null) changes[MetaKind.Army] = -1;
+        }
+
+        static void MoveTo(Actor actor, City city)
+        {
+            actor.stopBeingWarrior();
+            actor.joinCity(city);
+        }
+
+        // Previews for the editor: how many current members a change would affect.
+        public static int CountFailing(MetaHandle target, RuleSet set, out int members)
+        {
+            int failing = 0;
+            List<Actor> all = Members(target);
+            members = all.Count;
+            foreach (Actor actor in all) if (set != null && !set.Allows(new ActorSubject(actor))) failing++;
+            return failing;
+        }
+
+        public static int CountJoining(MetaHandle declarer, MetaKind kind, long id, out int members)
+        {
+            int joining = 0;
+            List<Actor> all = Members(declarer);
+            members = all.Count;
+            foreach (Actor actor in all) if (Plan(actor, kind, id) != null) joining++;
+            return joining;
+        }
+
+        public static Kingdom KingdomOf(MetaHandle meta)
+        {
+            switch (meta?.Target)
+            {
+                case Kingdom kingdom: return kingdom;
+                case City city: return city.kingdom;
+                case Army army: return army.getKingdom();
+                default: return null;
+            }
+        }
+
+        public static List<Actor> Members(MetaHandle target)
+        {
+            var result = new List<Actor>();
+            if (target == null || World.world?.units == null) return result;
+            foreach (Actor actor in World.world.units.getSimpleList())
+                if (actor != null && actor.isAlive() && Member(actor, target.Kind)?.Id == target.Id) result.Add(actor);
+            return result;
+        }
+
+        // Removing an individual bans it from this meta and expels it now.
+        public static void Remove(MetaHandle meta, Actor actor)
+        {
+            RuleSet set = Get(meta) ?? new RuleSet();
+            if (actor == null || set.Banned.Contains(actor.id)) return;
+            set.Banned.Add(actor.id);
+            Save(meta, set);
+            Reconcile(actor, true);
+        }
+
+        public static void Readmit(MetaHandle meta, long id)
+        {
+            RuleSet set = Get(meta);
+            if (set == null || !set.Banned.Remove(id)) return;
+            Save(meta, set);
         }
 
         static bool SameStats(Dictionary<string, float> a, Dictionary<string, float> b)

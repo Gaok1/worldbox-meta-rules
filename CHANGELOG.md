@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- Declare group memberships: "everyone in this kingdom speaks Latin", "every clan member serves in this army and lives in that city". Members are made to join a specific language, culture, religion, clan, kingdom, city or army, only when the game allows it (advanced creatures; clan capacity and species; cultures that forbid conversion; cities that welcome the creature; kings and city leaders stay; armies take residents of their city as warriors within the limit) and when no requirement of the target or of any group they keep would be broken. Moves that change several memberships (city → kingdom, leaving the old army) are checked as a whole. Cities and armies are listed for the selected meta's kingdom, or grouped per kingdom. Families and subspecies cannot be granted.
+- Manage individuals: a Members page lists the meta's creatures (searchable, click to open one). Removing an individual expels it and keeps it out while rules are active; removals can be undone with Allow back.
+- Impact previews before saving: a requirement shows how many current members would leave (red, with a second confirmation click, when it would empty the group); a group grant shows how many members would switch; the Active/Paused tooltip shows how many would leave on resume.
+- Declaration picker tabs are icons (Traits, Equipment, Stats, Groups) with the active one named in the title.
+
 ## 0.3.0
 
 - Declare equipment. Each member receives the item once per membership, in its own slot (the replaced item goes to the city's storage). "While a member" items are removed on leaving if still carried; permanent items are kept. Later swaps, upgrades or breakage are respected, never regenerated.

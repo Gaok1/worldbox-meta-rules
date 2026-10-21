@@ -29,7 +29,10 @@ namespace MetaRules.UI
         static Restriction draft;
         static Declaration effect;
         static int selectedCondition = -1;
-        static bool picking, pickingCondition, help;
+        static bool picking, pickingCondition, help, members;
+        static string memberQuery = "";
+        static NativeUi.Group memberList;
+        static bool confirmEmpty;
         static int category;
         static string query = "";
         static Text summaryLabel;
@@ -98,7 +101,7 @@ namespace MetaRules.UI
         static void ResetEditor()
         {
             draft = null; effect = null; selectedCondition = -1;
-            picking = false; help = false; query = "";
+            picking = false; help = false; members = false; query = ""; memberQuery = "";
         }
 
         static void Create()
@@ -171,9 +174,12 @@ namespace MetaRules.UI
 
         static RectTransform Block(float height, string name = "block") => Box(content, 0, 0, CW, height, name);
 
-        static void Build()
+        static void Build() => Build(false);
+
+        static void Build(bool keepConfirm)
         {
             if (root == null) return;
+            if (!keepConfirm) confirmEmpty = false;
             Tooltip.hideTooltip();
             Clear(root);
             Clear(content);
@@ -191,6 +197,7 @@ namespace MetaRules.UI
                     BuildIdentity();
                     if (WorldRules.IsBroken(selected)) Paragraph(Block(90), T("invalid_data"), 0, 0, CW, 90);
                     else if (help) BuildHelp();
+                    else if (members) BuildMembers();
                     else if (draft != null) BuildRestrictionEditor();
                     else if (effect != null) BuildDeclarationEditor();
                     else BuildOverview();
@@ -219,7 +226,13 @@ namespace MetaRules.UI
 
             RectTransform toggle = Button(block, 46, 30, 90, 17, Gray, () => { set.Enabled = !set.Enabled; Save(set); });
             Text(toggle, "● " + T(set.Enabled ? "active" : "paused"), 2, 0, 86, 17, 7, set.Enabled ? Good : Bad, TextAnchor.MiddleCenter);
-            MetaSymbols.Tip(toggle, () => T(set.Enabled ? "rules_on" : "rules_off"), () => T("toggle_rules"));
+            MetaSymbols.Tip(toggle, () => T(set.Enabled ? "rules_on" : "rules_off"), () =>
+            {
+                if (set.Enabled) return T("toggle_rules");
+                var active = new RuleSet { Restrictions = set.Restrictions, Banned = set.Banned };
+                int leaving = WorldRules.CountFailing(selected, active, out int total);
+                return T("toggle_rules") + "\n\n" + Impact(leaving, total);
+            });
             Small(block, "?", CW - 18, 30, 18, () => { ResetEditor(); help = true; Build(); }, T("help"));
         }
 
@@ -273,6 +286,12 @@ namespace MetaRules.UI
             }
             Label(requirements.Grid, "+  " + T("add_requirement"), 0, 0, rowW, 18, () => { draft = new Restriction(); StartPicker(true); });
             if (set.Restrictions.Count == 0) Hint(T("no_requirements") + " — " + T("requirements_hint"));
+
+            int removed = set.Banned?.Count ?? 0;
+            NativeUi.Group people = Section(T("members"), memberCount);
+            float peopleW = NativeUi.MakeList(people, 2f);
+            Label(people.Grid, T("manage_members") + (removed > 0 ? "  ·  " + removed + " " + T("removed").ToLowerInvariant() : "") + "  ›",
+                0, 0, peopleW, 18, () => { ResetEditor(); members = true; Build(); });
         }
 
         static RectTransform DeclarationToken(Transform parent, Declaration d, Action click, bool marked)
@@ -282,6 +301,12 @@ namespace MetaRules.UI
                 token = NativeUi.TraitButton(parent, trait, marked, click);
             else if (d.Kind == EffectKind.Item && AssetManager.items.get(d.Value) is EquipmentAsset item)
                 token = NativeUi.ItemButton(parent, item, marked, click);
+            else if (d.Kind == EffectKind.Meta && WorldRules.Find(d.Meta, d.MetaId) is MetaHandle meta)
+            {
+                token = NativeUi.Banner(parent, meta, Cell, click);
+                MetaSymbols.Tip(token, () => DeclarationName(d), () => KindLabel(d));
+                if (marked) Frame(token, 0);
+            }
             return token ?? Symbol(parent, 0, 0, Cell, DeclarationSprite(d), null, click, DeclarationName(d), KindLabel(d));
         }
 
@@ -300,6 +325,7 @@ namespace MetaRules.UI
             {
                 case EffectKind.Trait: return MetaSymbols.TraitSprite(d.Value);
                 case EffectKind.Item: return MetaSymbols.ItemSprite(d.Value);
+                case EffectKind.Meta: return MetaSymbols.KindSprite(d.Meta);
                 default: return MetaSymbols.StatSprite(d.Value);
             }
         }
@@ -310,6 +336,7 @@ namespace MetaRules.UI
             {
                 case EffectKind.Trait: return TraitName(d.Value);
                 case EffectKind.Item: return ItemName(d.Value);
+                case EffectKind.Meta: return WorldRules.Find(d.Meta, d.MetaId)?.Name ?? T("missing_meta");
                 default: return T("stat_" + d.Value) + " " + Number(d.Amount);
             }
         }
@@ -320,11 +347,14 @@ namespace MetaRules.UI
             {
                 case EffectKind.Trait: return T("trait");
                 case EffectKind.Item: return T("equipment") + " · " + SlotName(d.Value);
+                case EffectKind.Meta: return T("grant") + " · " + KindName(d.Meta);
                 default: return T("stat");
             }
         }
 
-        static Declaration Clone(Declaration d) => new Declaration { Id = d.Id, Enabled = d.Enabled, Kind = d.Kind, Value = d.Value, Amount = d.Amount, Lifetime = d.Lifetime };
+        static Declaration Clone(Declaration d) => new Declaration
+        { Id = d.Id, Enabled = d.Enabled, Kind = d.Kind, Value = d.Value, Amount = d.Amount, Lifetime = d.Lifetime, Meta = d.Meta, MetaId = d.MetaId };
+        static bool Chosen(Declaration d) => d.Kind == EffectKind.Meta ? d.MetaId >= 0 : !string.IsNullOrEmpty(d.Value);
         static Restriction Clone(Restriction r) => new Restriction
         {
             Id = r.Id, Enabled = r.Enabled, Any = r.Any,
@@ -361,7 +391,16 @@ namespace MetaRules.UI
         static void BuildDeclarationEditor()
         {
             bool exists = Current.Declarations.Any(d => d.Id == effect.Id);
-            RectTransform block = Block(144, "declaration");
+            bool grant = effect.Kind == EffectKind.Meta;
+            float statusY = grant ? 66 : 88;
+            RectTransform block = Block(grant ? 140 : 144, "declaration");
+            if (grant)
+            {
+                int joining = WorldRules.CountJoining(selected, effect.Meta, effect.MetaId, out int total);
+                string text = string.Format(T("impact_join"), joining, total, DeclarationName(effect));
+                if (joining > 0) text += " " + string.Format(T("impact_join_leave"), KindName(effect.Meta).ToLowerInvariant());
+                Paragraph(block, text, 0, 88, CW, 20, 6, TextAnchor.MiddleCenter).color = joining > 0 ? Gold : Muted;
+            }
             EditorHeader(block, T(exists ? "declaration" : "add_declaration"), () => { effect = null; Build(); });
 
             RectTransform card = Sliced(block, Slot, 0, 22, CW, 38);
@@ -387,17 +426,17 @@ namespace MetaRules.UI
                 });
                 Step(block, "+1", x + 2 * step + input, 66, 1); Step(block, "+10", x + 3 * step + input, 66, 10);
             }
-            else
+            else if (!grant)
             {
                 Row(block, T("duration"), 66);
                 Segment(block, x, 66, w, new[] { T("while_member"), T("permanent") }, effect.Lifetime == Lifetime.Permanent ? 1 : 0,
                     i => effect.Lifetime = i == 1 ? Lifetime.Permanent : Lifetime.Membership);
             }
-            Row(block, T("status"), 88);
-            Segment(block, x, 88, w, new[] { T("enabled"), T("disabled") }, effect.Enabled ? 0 : 1, i => effect.Enabled = i == 0);
-            Footer(block, 120, () =>
+            Row(block, T("status"), statusY);
+            Segment(block, x, statusY, w, new[] { T("enabled"), T("disabled") }, effect.Enabled ? 0 : 1, i => effect.Enabled = i == 0);
+            Footer(block, grant ? 116 : statusY + 32, () =>
             {
-                if (string.IsNullOrEmpty(effect.Value)) return;
+                if (!Chosen(effect)) return;
                 RuleSet set = Current;
                 int index = set.Declarations.FindIndex(d => d.Id == effect.Id);
                 if (index < 0) set.Declarations.Add(effect); else set.Declarations[index] = effect;
@@ -405,7 +444,7 @@ namespace MetaRules.UI
             }, () => { effect = null; Build(); }, exists ? (Action)(() =>
             { RuleSet set = Current; set.Declarations.RemoveAll(d => d.Id == effect.Id); effect = null; Save(set); }) : null);
 
-            string helpText = effect.Kind == EffectKind.Trait ? "trait_help" : effect.Kind == EffectKind.Item ? "item_help" : "stat_help";
+            string helpText = effect.Kind == EffectKind.Trait ? "trait_help" : effect.Kind == EffectKind.Item ? "item_help" : grant ? "meta_help" : "stat_help";
             HelpBlock(T(helpText));
         }
 
@@ -446,16 +485,39 @@ namespace MetaRules.UI
             }
             else Hint(T(draft.Conditions.Count == 0 ? "first_condition" : "select_condition"));
 
+            bool emptiesGroup = false;
+            if (draft.Conditions.Count > 0)
+            {
+                RuleSet now = Current;
+                var preview = new RuleSet
+                {
+                    Banned = now.Banned,
+                    Restrictions = now.Restrictions.Where(r => r.Id != draft.Id).Concat(new[] { draft }).ToList()
+                };
+                int leaving = WorldRules.CountFailing(selected, preview, out int total);
+                emptiesGroup = total > 0 && leaving == total;
+                string text = Impact(leaving, total) + (now.Enabled ? "" : " " + T("impact_when_active"));
+                Paragraph(Block(22, "impact"), text, 0, 0, CW, 22, 7, TextAnchor.MiddleCenter).color =
+                    leaving == 0 ? Good : emptiesGroup ? Bad : Gold;
+            }
+
             Footer(Block(20, "footer"), 0, () =>
             {
                 if (draft.Conditions.Count == 0) return;
+                if (emptiesGroup && !confirmEmpty) { confirmEmpty = true; Build(true); return; }
                 RuleSet set = Current;
                 int index = set.Restrictions.FindIndex(r => r.Id == draft.Id);
                 if (index < 0) set.Restrictions.Add(draft); else set.Restrictions[index] = draft;
                 draft = null; Save(set);
             }, () => { draft = null; Build(); }, exists ? (Action)(() =>
-            { RuleSet set = Current; set.Restrictions.RemoveAll(r => r.Id == draft.Id); draft = null; Save(set); }) : null);
+            { RuleSet set = Current; set.Restrictions.RemoveAll(r => r.Id == draft.Id); draft = null; Save(set); }) : null,
+            confirmEmpty ? T("confirm_empty") : null);
         }
+
+        static string Impact(int leaving, int total) =>
+            leaving == 0 ? T("impact_none") :
+            leaving == total ? string.Format(T("impact_all"), total) :
+            string.Format(T("impact_some"), leaving, total);
 
         static void BuildHelp()
         {
@@ -492,7 +554,7 @@ namespace MetaRules.UI
         static void LeavePicker()
         {
             picking = false;
-            if (effect != null && string.IsNullOrEmpty(effect.Value)) effect = null;
+            if (effect != null && !Chosen(effect)) effect = null;
             if (draft != null && draft.Conditions.Count == 0) draft = null;
             Build();
         }
@@ -500,7 +562,8 @@ namespace MetaRules.UI
         static void BuildPicker()
         {
             float y = ViewTop + 2f;
-            string title = T(pickingCondition ? "add_condition" : effect != null && !string.IsNullOrEmpty(effect.Value) ? "change_selection" : "add_declaration");
+            string title = T(pickingCondition ? "add_condition" : effect != null && Chosen(effect) ? "change_selection" : "add_declaration");
+            if (!pickingCondition) title += "  ·  " + T(new[] { "traits", "equipment", "stats", "groups" }[Mathf.Clamp(category, 0, 3)]);
             Small(root, "‹", Left, y, 16, LeavePicker, T("back"));
             Text(root, Fit(title, 8, CW - 22), Left + 22, y, CW - 22, 16, 8, HeaderGold, TextAnchor.MiddleLeft);
             y += 19f;
@@ -520,15 +583,16 @@ namespace MetaRules.UI
             }
             else
             {
-                string[] names = { T("traits"), T("equipment"), T("stats") };
-                Sprite[] icons = { MetaSymbols.TraitSprite("strong"), MetaSymbols.EquipmentSprite(), MetaSymbols.StatSprite("damage") };
-                float tab = (CW - 2 * 2f) / 3f;
-                for (int i = 0; i < 3; i++)
+                string[] names = { T("traits"), T("equipment"), T("stats"), T("groups") };
+                Sprite[] icons = { MetaSymbols.TraitSprite("strong"), MetaSymbols.EquipmentSprite(), MetaSymbols.StatSprite("damage"), MetaSymbols.KindSprite(MetaKind.Language) };
+                float tab = (CW - 3 * 2f) / 4f;
+                for (int i = 0; i < 4; i++)
                 {
                     int filter = i;
+                    string name = names[i];
                     RectTransform token = Button(root, Left + i * (tab + 2f), y, tab, 20, Slot, () => SelectTab(filter));
-                    Picture(token, icons[i], 4, 3, 14, 14);
-                    Text(token, Fit(names[i], 7, tab - 22), 20, 0, tab - 22, 20, 7, category == i ? Gold : Muted, TextAnchor.MiddleLeft);
+                    Picture(token, icons[i], tab / 2 - 7, 3, 14, 14);
+                    MetaSymbols.Tip(token, () => name);
                     if (category == i) Frame(token, 0);
                 }
             }
@@ -584,6 +648,7 @@ namespace MetaRules.UI
             if (pickingCondition && category > 0) return MetaChoices((MetaKind)(category - 1));
             if (category == 0) return TraitChoices();
             if (category == 1) return ItemChoices();
+            if (category == 3) return GrantChoices();
             return StatChoices();
         }
 
@@ -714,7 +779,124 @@ namespace MetaRules.UI
         static void SetEffect(EffectKind kind, string value)
         {
             if (effect.Kind != kind) effect.Amount = 0;
-            effect.Kind = kind; effect.Value = value;
+            effect.Kind = kind; effect.Value = value; effect.MetaId = -1;
+        }
+
+        // Groups members are made to join; a meta never grants its own type. Cities and armies
+        // are listed for the selected meta's kingdom, or grouped per kingdom when it has none.
+        static readonly MetaKind[] GrantKinds =
+        { MetaKind.Language, MetaKind.Culture, MetaKind.Religion, MetaKind.Clan, MetaKind.Kingdom, MetaKind.City, MetaKind.Army };
+
+        static List<Group> GrantChoices()
+        {
+            var groups = new List<Group>();
+            Kingdom scope = WorldRules.KingdomOf(selected);
+            foreach (MetaKind type in GrantKinds)
+            {
+                if (type == selected.Kind) continue;
+                // Moving an army's or city's members elsewhere would only take them out of it.
+                if (selected.Kind == MetaKind.Army && (type == MetaKind.City || type == MetaKind.Kingdom)) continue;
+                if (selected.Kind == MetaKind.City && type == MetaKind.Kingdom) continue;
+                bool perKingdom = type == MetaKind.City || type == MetaKind.Army;
+                var byKingdom = new Dictionary<long, Group>();
+                Group plain = null;
+                foreach (MetaHandle value in WorldRules.Metas)
+                {
+                    MetaHandle meta = value;
+                    if (meta.Kind != type) continue;
+                    Kingdom owner = perKingdom ? WorldRules.KingdomOf(meta) : null;
+                    if (perKingdom && scope != null && owner != scope) continue;
+                    Group group;
+                    if (!perKingdom || scope != null)
+                    {
+                        if (plain == null) groups.Add(plain = new Group { Title = KindName(type), Banners = true });
+                        group = plain;
+                    }
+                    else
+                    {
+                        long key = owner?.id ?? -1;
+                        if (!byKingdom.TryGetValue(key, out group))
+                        {
+                            group = new Group { Title = KindName(type) + " · " + (owner?.name ?? T("other")), Banners = true };
+                            byKingdom[key] = group;
+                            groups.Add(group);
+                        }
+                    }
+                    bool marked = Current.Declarations.Any(d => d.Kind == EffectKind.Meta && d.Meta == meta.Kind && d.MetaId == meta.Id);
+                    Action select = () =>
+                    {
+                        SetEffect(EffectKind.Meta, "");
+                        effect.Meta = meta.Kind; effect.MetaId = meta.Id;
+                        picking = false; Build();
+                    };
+                    group.Items.Add(new Choice { Search = meta.Name + " " + (owner?.name ?? ""), Create = grid => Marked(NativeUi.Banner(grid, meta, 34, select), marked) });
+                }
+            }
+            return groups;
+        }
+
+        // ── Members: individuals of this meta, removable one by one.
+        const int MemberRows = 200;
+
+        static void BuildMembers()
+        {
+            RectTransform head = Block(42, "members");
+            EditorHeader(head, T("members"), () => { members = false; Build(); });
+            Input(head, memberQuery, T("search_live"), 0, 22, CW, 17, value => { memberQuery = value; FillMembers(); });
+            memberList = NativeUi.CreateGroup(content, T("members"), HeaderGold);
+            NativeUi.MakeList(memberList, 2f);
+            FillMembers();
+
+            RuleSet set = Current;
+            if (set.Banned != null && set.Banned.Count > 0)
+            {
+                NativeUi.Group removed = Section(T("removed"), set.Banned.Count);
+                float rowW = NativeUi.MakeList(removed, 2f);
+                foreach (long value in set.Banned.ToList())
+                {
+                    long id = value;
+                    Actor actor = World.world.units.get(id);
+                    RectTransform row = Sliced(removed.Grid, Slot, 0, 0, rowW, 22);
+                    if (actor != null && actor.isAlive()) Avatar(row, actor);
+                    string name = actor != null && actor.isAlive() ? actor.getName() : "#" + id + " · " + T("unit_dead");
+                    Text(row, Fit(name, 7, rowW - 86), 22, 0, rowW - 86, 22, 7, Muted, TextAnchor.MiddleLeft);
+                    Label(row, T("readmit"), rowW - 62, 2, 60, 18, () => { WorldRules.Readmit(selected, id); Build(); });
+                }
+                if (!set.Enabled) Hint(T("removed_paused"));
+            }
+            HelpBlock(T("members_help"));
+        }
+
+        static void FillMembers()
+        {
+            if (memberList == null) return;
+            Clear(memberList.Grid);
+            List<Actor> all = WorldRules.Members(selected);
+            var matching = all.Where(a => Matches(a.getName() ?? "", memberQuery)).OrderBy(a => a.getName()).ToList();
+            if (memberList.Counter != null) memberList.Counter.text = all.Count.ToString();
+            float rowW = Mathf.Min(CW, ((RectTransform)memberList.Grid).rect.width > 1 ? ((RectTransform)memberList.Grid).rect.width : CW) - 8;
+            foreach (Actor value in matching.Take(MemberRows))
+            {
+                Actor actor = value;
+                RectTransform row = Sliced(memberList.Grid, Slot, 0, 0, rowW, 22);
+                Avatar(row, actor);
+                RectTransform open = Button(row, 22, 0, rowW - 86, 22, null, () => { SelectedUnit.select(actor); ScrollWindow.showWindow("unit"); });
+                Text(open, Fit(actor.getName() ?? "#" + actor.id, 7, rowW - 86), 0, 0, rowW - 86, 22, 7, Ink, TextAnchor.MiddleLeft);
+                MetaSymbols.Tip(open, () => actor.getName(), () => T("open_unit"));
+                Label(row, T("remove"), rowW - 62, 2, 60, 18, () => { WorldRules.Remove(selected, actor); Build(); }, Red);
+            }
+            if (matching.Count > MemberRows)
+                Text(Box(memberList.Grid, 0, 0, rowW, 16, "more"), string.Format(T("showing"), MemberRows, matching.Count), 0, 0, rowW, 16, 6, Muted, TextAnchor.MiddleCenter);
+            else if (matching.Count == 0)
+                Text(Box(memberList.Grid, 0, 0, rowW, 16, "none"), T("no_results"), 0, 0, rowW, 16, 6, Muted, TextAnchor.MiddleCenter);
+            LayoutRebuilder.ForceRebuildLayoutImmediate(content);
+        }
+
+        static void Avatar(RectTransform row, Actor actor)
+        {
+            Sprite sprite = null;
+            try { sprite = actor.asset?.getSpriteIcon(); } catch (Exception) { /* Missing icon. */ }
+            if (sprite != null) Picture(row, sprite, 3, 3, 16, 16);
         }
 
         static void Save(RuleSet set)
@@ -777,8 +959,15 @@ namespace MetaRules.UI
             }
         }
 
-        static void Footer(Transform parent, float y, Action save, Action cancel, Action remove)
+        static void Footer(Transform parent, float y, Action save, Action cancel, Action remove, string confirm = null)
         {
+            if (confirm != null)
+            {
+                // Destructive save: one wide red button asks for the second click.
+                Label(parent, T("cancel"), 0, y, 60, 20, cancel);
+                Label(parent, confirm, 64, y, CW - 64, 20, save, Red);
+                return;
+            }
             if (remove != null) Label(parent, T("remove"), 0, y, 60, 20, remove, Red);
             Label(parent, T("cancel"), CW - 126, y, 60, 20, cancel);
             Label(parent, T("save"), CW - 62, y, 62, 20, save);

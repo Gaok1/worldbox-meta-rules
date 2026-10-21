@@ -5,7 +5,7 @@ namespace MetaRules.Core
 {
     public enum MetaKind { Army, Clan, Culture, Religion, City, Kingdom, Language, Family, Subspecies }
     public enum ConditionKind { Trait, Membership }
-    public enum EffectKind { Trait, Stat, Item }
+    public enum EffectKind { Trait, Stat, Item, Meta }
     public enum Lifetime { Membership, Permanent }
 
     [Serializable]
@@ -56,6 +56,9 @@ namespace MetaRules.Core
         public string Value = "";
         public float Amount;
         public Lifetime Lifetime;
+        // EffectKind.Meta: the specific group members are made to join.
+        public MetaKind Meta;
+        public long MetaId = -1;
     }
 
     [Serializable]
@@ -65,10 +68,13 @@ namespace MetaRules.Core
         public bool Enabled = true;
         public List<Restriction> Restrictions = new List<Restriction>();
         public List<Declaration> Declarations = new List<Declaration>();
+        // Individuals removed by hand; they may not belong while rules are enabled.
+        public List<long> Banned = new List<long>();
 
         public bool Allows(ISubject subject)
         {
             if (!Enabled) return true;
+            if (Banned != null && Banned.Contains(subject.Id)) return false;
             foreach (Restriction rule in Restrictions) if (!rule.Allows(subject)) return false;
             return true;
         }
@@ -76,6 +82,7 @@ namespace MetaRules.Core
 
     public interface ISubject
     {
+        long Id { get; }
         long MemberOf(MetaKind kind);
         bool HasTrait(string id);
         bool AddTrait(string id);
@@ -113,12 +120,47 @@ namespace MetaRules.Core
         public readonly Dictionary<string, float> Stats = new Dictionary<string, float>(StringComparer.Ordinal);
         // Ordered by group precedence; true means permanent.
         public readonly List<KeyValuePair<string, bool>> Items = new List<KeyValuePair<string, bool>>();
-        public bool Empty => Temporary.Count == 0 && Permanent.Count == 0 && Stats.Count == 0 && Items.Count == 0;
+        // One granted group per meta type; the first group to declare one wins.
+        public readonly Dictionary<MetaKind, long> Metas = new Dictionary<MetaKind, long>();
+        public bool Empty => Temporary.Count == 0 && Permanent.Count == 0 && Stats.Count == 0 && Items.Count == 0 && Metas.Count == 0;
     }
 
     public static class RuleEngine
     {
         public static bool RequiresExit(ISubject subject, RuleSet set) => set != null && !set.Allows(subject);
+
+        // A creature can be made to adopt or move into these. Family and subspecies are
+        // biological and cannot be granted.
+        public static bool Grantable(MetaKind kind) => kind != MetaKind.Family && kind != MetaKind.Subspecies;
+
+        // Joining must satisfy the target's requirements and every group the subject keeps.
+        public static bool CanJoin(ISubject subject, MetaKind kind, long id, RuleSet target, IEnumerable<RuleSet> kept) =>
+            CanMove(subject, new Dictionary<MetaKind, long> { { kind, id } }, new[] { target }, kept);
+
+        // Some moves change several memberships at once (a new city also means its kingdom,
+        // and leaving the old army). Id -1 means leaving that type.
+        public static bool CanMove(ISubject subject, IDictionary<MetaKind, long> changes, IEnumerable<RuleSet> targets, IEnumerable<RuleSet> kept)
+        {
+            var moved = new Moved(subject, changes);
+            foreach (RuleSet set in targets) if (set != null && !set.Allows(moved)) return false;
+            foreach (RuleSet set in kept) if (set != null && !set.Allows(moved)) return false;
+            return true;
+        }
+
+        sealed class Moved : ISubject
+        {
+            readonly ISubject inner; readonly IDictionary<MetaKind, long> changes;
+            public Moved(ISubject subject, IDictionary<MetaKind, long> changes) { inner = subject; this.changes = changes; }
+            public long Id => inner.Id;
+            public long MemberOf(MetaKind value) => changes.TryGetValue(value, out long id) ? id : inner.MemberOf(value);
+            public bool HasTrait(string trait) => inner.HasTrait(trait);
+            public bool AddTrait(string trait) => false;
+            public void RemoveTrait(string trait) { }
+            public string SlotOf(string item) => null;
+            public long Equipped(string slot, out string item) { item = null; return -1; }
+            public long Equip(string item) => -1;
+            public void Unequip(string slot) { }
+        }
 
         public static bool Valid(RuleSet set)
         {
@@ -134,8 +176,12 @@ namespace MetaRules.Core
                 }
             }
             foreach (Declaration d in set.Declarations)
-                if (d == null || string.IsNullOrWhiteSpace(d.Value) || !Enum.IsDefined(typeof(EffectKind), d.Kind)
-                    || !Enum.IsDefined(typeof(Lifetime), d.Lifetime) || float.IsNaN(d.Amount) || float.IsInfinity(d.Amount)) return false;
+            {
+                if (d == null || !Enum.IsDefined(typeof(EffectKind), d.Kind) || !Enum.IsDefined(typeof(Lifetime), d.Lifetime)
+                    || float.IsNaN(d.Amount) || float.IsInfinity(d.Amount)) return false;
+                if (d.Kind == EffectKind.Meta ? d.MetaId < 0 || !Enum.IsDefined(typeof(MetaKind), d.Meta) || !Grantable(d.Meta)
+                    : string.IsNullOrWhiteSpace(d.Value)) return false;
+            }
             return true;
         }
 
@@ -149,7 +195,13 @@ namespace MetaRules.Core
                 if (!set.Enabled) continue;
                 foreach (Declaration d in set.Declarations)
                 {
-                    if (!d.Enabled || string.IsNullOrWhiteSpace(d.Value)) continue;
+                    if (!d.Enabled) continue;
+                    if (d.Kind == EffectKind.Meta)
+                    {
+                        if (d.MetaId >= 0 && Grantable(d.Meta) && !result.Metas.ContainsKey(d.Meta)) result.Metas[d.Meta] = d.MetaId;
+                        continue;
+                    }
+                    if (string.IsNullOrWhiteSpace(d.Value)) continue;
                     if (d.Kind == EffectKind.Trait)
                     {
                         (d.Lifetime == Lifetime.Permanent ? result.Permanent : result.Temporary).Add(d.Value);

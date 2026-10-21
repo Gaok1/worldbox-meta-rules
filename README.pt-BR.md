@@ -32,6 +32,7 @@ Defina o que os membros recebem:
 - Um traço enquanto pertencerem ao grupo.
 - Um traço permanente, que continua após a saída.
 - Um equipamento (arma, capacete, armadura, botas, anel ou amuleto), enquanto pertencer ou permanente.
+- Entrada em outro grupo: "todo mundo deste reino fala Latim", "todo membro do clã serve neste exército e mora naquela cidade" (idioma, cultura, religião, clã, reino, cidade ou exército). Só acontece quando o jogo permite e sem quebrar nenhuma exigência; mudar de cidade também muda o reino e tira do exército antigo. Família e subespécie não podem ser concedidas.
 - Um bônus de vida, dano, armadura, velocidade, velocidade de ataque, inteligência, habilidade militar, diplomacia ou administração enquanto pertencerem.
 
 Exemplo: todos os falantes de um idioma específico recebem um traço; todos os soldados de um exército recebem +10 de armadura.
@@ -39,6 +40,10 @@ Exemplo: todos os falantes de um idioma específico recebem um traço; todos os 
 Traços anteriores ao benefício são preservados. Se vários grupos concedem o mesmo traço temporário, ele só é retirado quando não houver mais fontes ativas. Traços opostos não são apagados para forçar uma declaração. Os bônus de atributos se somam entre grupos, sem acumular a cada atualização.
 
 O equipamento é entregue **uma vez por pertencimento**, substituindo o item daquele espaço (o antigo vai para o depósito da cidade). Se depois a criatura trocar, melhorar ou quebrar o item, o mod não o recria. Ao sair, o item "enquanto pertencer" só é removido se ainda for o mesmo; o permanente fica. Só criaturas que usam itens recebem equipamento; se vários grupos declararem o mesmo espaço, vale o primeiro.
+
+### Membros
+
+A página **Membros** lista as criaturas do meta (com busca; clique no nome para abrir). **Remover** expulsa aquele indivíduo e o mantém fora enquanto as regras estiverem ativas; **Readmitir** desfaz.
 
 ### Detalhes e opções
 
