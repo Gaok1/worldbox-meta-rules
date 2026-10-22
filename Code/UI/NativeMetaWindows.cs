@@ -33,33 +33,27 @@ namespace MetaRules.UI
                 case "language": return WorldRules.Handle(MetaKind.Language, SelectedMetas.selected_language, SelectedMetas.selected_language?.data);
                 case "family": return WorldRules.Handle(MetaKind.Family, SelectedMetas.selected_family, SelectedMetas.selected_family?.data);
                 case "subspecies": return WorldRules.Handle(MetaKind.Subspecies, SelectedMetas.selected_subspecies, SelectedMetas.selected_subspecies?.data);
+                case "item": return WorldRules.Handle(MetaKind.Equipment, SelectedMetas.selected_item, SelectedMetas.selected_item?.data);
                 default: return null;
             }
         }
 
         public static void OpenNative(MetaHandle meta)
         {
-            if (meta == null) return;
-            switch (meta.Kind)
-            {
-                case MetaKind.Army: SelectedMetas.selected_army = (Army)meta.Target; break;
-                case MetaKind.Clan: SelectedMetas.selected_clan = (Clan)meta.Target; break;
-                case MetaKind.Culture: SelectedMetas.selected_culture = (Culture)meta.Target; break;
-                case MetaKind.Religion: SelectedMetas.selected_religion = (Religion)meta.Target; break;
-                case MetaKind.City: SelectedMetas.selected_city = (City)meta.Target; break;
-                case MetaKind.Kingdom: SelectedMetas.selected_kingdom = (Kingdom)meta.Target; break;
-                case MetaKind.Language: SelectedMetas.selected_language = (Language)meta.Target; break;
-                case MetaKind.Family: SelectedMetas.selected_family = (Family)meta.Target; break;
-                case MetaKind.Subspecies: SelectedMetas.selected_subspecies = (Subspecies)meta.Target; break;
-            }
-            ScrollWindow.showWindow(meta.Kind.ToString().ToLowerInvariant());
+            if (!(meta?.Target is NanoObject target)) return;
+            MetaTypeAsset asset = target.getMetaTypeAsset();
+            if (asset?.set_selected == null || string.IsNullOrEmpty(asset.window_name)) return;
+            asset.set_selected(target);
+            ScrollWindow.showWindow(asset.window_name);
         }
 
         public static void Attach(string id)
         {
-            if (Selection(id) == null || !ScrollWindow._all_windows.TryGetValue(id, out ScrollWindow window) || window == null) return;
+            if (!ScrollWindow._all_windows.TryGetValue(id, out ScrollWindow window) || window == null) return;
             Transform bg = window.transform.Find("Background");
             if (bg == null) return;
+            AttachCreationReturn(window, bg);
+            if (Selection(id) == null) return;
             Transform tabs = bg.Find("Tabs");
             if (tabs != null && tabs.Find(ButtonId) != null || bg.Find(ButtonId) != null) return;
             Transform template = null;
@@ -106,6 +100,23 @@ namespace MetaRules.UI
                 if (meta != null) RulesWindow.OpenFor(meta);
             });
             if (tabs != null) LayoutRebuilder.ForceRebuildLayoutImmediate((RectTransform)tabs);
+        }
+
+        static void AttachCreationReturn(ScrollWindow window, Transform bg)
+        {
+            const string name = "mr_creation_return";
+            Transform existing = bg.Find(name);
+            bool show = window.screen_id != "mr_window" && RulesWindow.HasCreationReturn;
+            if (existing != null) { existing.gameObject.SetActive(show); return; }
+            if (!show) return;
+            // A small footer leaves every native editor and its tabs intact, including
+            // the customization/trait subwindows. It always returns to the saved draft.
+            float height = ((RectTransform)bg).rect.height;
+            RectTransform button = UiKit.Button(bg, 20, height + 3, 200, 22,
+                "ui/special/special_buttonGray", RulesWindow.ReturnFromCreation);
+            button.name = name;
+            UiKit.Text(button, "‹  " + RulesWindow.T("return_to_rule"), 4, 0, 192, 22, 8, UiKit.Ink, TextAnchor.MiddleCenter);
+            MetaSymbols.Tip(button, () => RulesWindow.T("return_to_rule"), () => RulesWindow.T("create_meta_help"));
         }
     }
 

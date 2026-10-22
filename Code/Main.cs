@@ -18,7 +18,7 @@ namespace MetaRules
             new Harmony("gaok1.meta_rules").PatchAll(typeof(Main).Assembly);
             gameObject.AddComponent<RuleLoop>();
             RulesWindow.Init();
-            LogInfo("Meta Rules 0.5.0 loaded");
+            LogInfo("Meta Rules " + GetDeclaration().Version + " loaded");
         }
     }
 

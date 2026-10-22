@@ -18,7 +18,7 @@ namespace MetaRules.UI
     {
         const string WindowId = "mr_window";
         // Native window geometry (windows/empty): 240x320 background, 232-wide scroll view.
-        const float CW = 210f, Left = 15f, ViewW = 232f, ViewH = 286.2f, ViewY = -6.5f, ViewTop = 23.4f, PickerInset = 64f;
+        const float CW = 210f, Left = 15f, ViewW = 232f, ViewH = 286.2f, ViewY = -6.5f, ViewTop = 23.4f, PickerInset = 64f, ConditionPickerInset = 112f;
         const float Cell = NativeUi.CellSize;
         const string Red = "ui/special/special_buttonRed", Gray = "ui/special/special_buttonGray", Field = "ui/special/darkInputFieldEmpty";
         static readonly Color Good = Hex("#8fd16a"), Bad = Hex("#ef7a62");
@@ -33,6 +33,9 @@ namespace MetaRules.UI
         static string memberQuery = "";
         static string memberFeedback = "";
         static NativeUi.Group memberList;
+        static bool onlyEligible;
+        static bool IsEquipment => selected?.Kind == MetaKind.Equipment;
+        static string People => T(IsEquipment ? "wearers" : "members");
         static bool confirmEmpty;
         static int category;
         static string query = "";
@@ -40,10 +43,34 @@ namespace MetaRules.UI
         static int memberCount, incompatibleCount;
         static float nextSummary;
         static List<Group> results;
+        static MetaHandle createdMeta;
+        static string creationFeedback = "";
+
+        public static bool HasCreationReturn => createdMeta != null && selected != null &&
+            !SmoothLoader.isLoading() && ReferenceEquals(world, World.world?.map_stats) &&
+            WorldRules.Metas.Any(m => ReferenceEquals(m.Target, selected.Target) && m.Id == selected.Id);
+
+        public static void ReturnFromCreation()
+        {
+            if (!HasCreationReturn) { createdMeta = null; return; }
+            WorldRules.RefreshMetas();
+            createdMeta = null;
+            ScrollWindow.showWindow(WindowId);
+            Build();
+        }
+
+        public static void ResumeAfterNativeEditor()
+        {
+            if (!HasCreationReturn) return;
+            WorldRules.RefreshMetas();
+            createdMeta = null;
+            Build();
+        }
 
         sealed class Choice
         {
             public string Search;
+            public bool AlwaysVisible;
             public Func<Transform, RectTransform> Create;
             public RectTransform View;
         }
@@ -53,6 +80,7 @@ namespace MetaRules.UI
             public string Title;
             public Color Color = HeaderGold;
             public bool Banners;
+            public bool Rows;
             public readonly List<Choice> Items = new List<Choice>();
             public NativeUi.Group View;
         }
@@ -90,6 +118,7 @@ namespace MetaRules.UI
         public static void OpenFor(MetaHandle meta)
         {
             if (meta == null || World.world?.units == null || SmoothLoader.isLoading()) return;
+            if (HasCreationReturn && ReferenceEquals(meta.Target, createdMeta.Target)) { ReturnFromCreation(); return; }
             world = World.world.map_stats;
             WorldRules.RefreshMetas();
             selected = meta;
@@ -101,9 +130,10 @@ namespace MetaRules.UI
 
         static void ResetEditor()
         {
+            createdMeta = null; creationFeedback = "";
             draft = null; effect = null; selectedCondition = -1;
             picking = false; help = false; members = false; query = ""; memberQuery = "";
-            addingMembers = false; memberFeedback = "";
+            addingMembers = false; onlyEligible = false; memberFeedback = "";
         }
 
         static void Create()
@@ -157,6 +187,7 @@ namespace MetaRules.UI
             root.anchorMin = root.anchorMax = root.pivot = new Vector2(0.5f, 0.5f);
             root.anchoredPosition = Vector2.zero;
             root.SetAsLastSibling();
+            window.gameObject.AddComponent<RulesWindowResume>();
         }
 
         static void SetInset(float top)
@@ -187,7 +218,7 @@ namespace MetaRules.UI
             Clear(content);
             results = null;
             summaryLabel = null;
-            SetInset(picking ? PickerInset : 0f);
+            SetInset(picking ? pickingCondition ? ConditionPickerInset : PickerInset : 0f);
             try
             {
                 if (!ReferenceEquals(world, World.world?.map_stats) || selected == null ||
@@ -221,8 +252,8 @@ namespace MetaRules.UI
             Text(block, Fit(selected.Name, 10, CW - 48), 46, 1, CW - 46, 16, 10, Ink, TextAnchor.MiddleLeft);
             summaryLabel = Text(block, "", 46, 16, CW - 46, 12, 7, Muted, TextAnchor.MiddleLeft).GetComponent<Text>();
             RectTransform hover = Button(block, 46, 16, CW - 46, 12, null, () => { });
-            MetaSymbols.Tip(hover, () => T("members") + ": " + memberCount,
-                () => T("violations") + ": " + incompatibleCount + "\n\n" + T("admission_help") +
+            MetaSymbols.Tip(hover, () => People + ": " + memberCount,
+                () => T("violations") + ": " + incompatibleCount + "\n\n" + T(IsEquipment ? "equipment_rules_help" : "admission_help") +
                     (selected.Kind == MetaKind.Subspecies ? "\n\n" + T("subspecies_help") : ""));
             UpdateSummary();
 
@@ -244,7 +275,7 @@ namespace MetaRules.UI
         {
             if (summaryLabel == null) return;
             memberCount = WorldRules.MemberCount(selected, out incompatibleCount);
-            summaryLabel.text = KindName(selected.Kind) + " · " + memberCount + " " + T("members").ToLowerInvariant() +
+            summaryLabel.text = KindName(selected.Kind) + " · " + memberCount + " " + People.ToLowerInvariant() +
                 (incompatibleCount > 0 ? " · <color=" + Tag(Bad) + ">" + incompatibleCount + " " + T("incompatible") + "</color>" : "");
         }
 
@@ -259,6 +290,9 @@ namespace MetaRules.UI
         static void BuildOverview()
         {
             RuleSet set = Current;
+            if (IsEquipment) HelpBlock(T("equipment_intro"));
+            else Label(Block(22, "add_members"), "+  " + T("add_members"), 0, 0, CW, 22,
+                () => { ResetEditor(); members = true; addingMembers = true; Build(); });
             NativeUi.Group declarations = Section(T("declarations"), set.Declarations.Count);
             foreach (Declaration value in set.Declarations)
             {
@@ -269,7 +303,7 @@ namespace MetaRules.UI
                 else if (item.Lifetime == Lifetime.Permanent) Corner(token, Gold);
             }
             Small(declarations.Grid, "+", 0, 0, Cell, () => { effect = new Declaration(); StartPicker(false); }, T("add_declaration"));
-            if (set.Declarations.Count == 0) Hint(T("no_declarations") + " — " + T("declarations_hint"));
+            if (set.Declarations.Count == 0) Hint(T("no_declarations") + " — " + T(IsEquipment ? "wearer_declarations_hint" : "declarations_hint"));
 
             NativeUi.Group requirements = Section(T("requirements"), set.Restrictions.Count);
             float rowW = NativeUi.MakeList(requirements, 2f);
@@ -290,9 +324,9 @@ namespace MetaRules.UI
             if (set.Restrictions.Count == 0) Hint(T("no_requirements") + " — " + T("requirements_hint"));
 
             int removed = set.Banned?.Count ?? 0;
-            NativeUi.Group people = Section(T("members"), memberCount);
+            NativeUi.Group people = Section(People, memberCount);
             float peopleW = NativeUi.MakeList(people, 2f);
-            Label(people.Grid, T("manage_members") + (removed > 0 ? "  ·  " + removed + " " + T("removed").ToLowerInvariant() : "") + "  ›",
+            Label(people.Grid, T(IsEquipment ? "manage_wearers" : "manage_members") + (removed > 0 ? "  ·  " + removed + " " + T("removed").ToLowerInvariant() : "") + "  ›",
                 0, 0, peopleW, 18, () => { ResetEditor(); members = true; Build(); });
             Label(people.Grid, T("settings"), 0, 0, peopleW, 18,
                 () => NeoModLoader.ui.ModConfigureWindow.ShowWindow(Main.Instance.GetConfig()));
@@ -397,13 +431,19 @@ namespace MetaRules.UI
             bool exists = Current.Declarations.Any(d => d.Id == effect.Id);
             bool grant = effect.Kind == EffectKind.Meta;
             float statusY = grant ? 66 : 88;
+            float footerY = grant ? 116 : statusY + 32;
             RectTransform block = Block(grant ? 140 : 144, "declaration");
             if (grant)
             {
                 int joining = WorldRules.CountJoining(selected, effect.Meta, effect.MetaId, out int total);
                 string text = string.Format(T("impact_join"), joining, total, DeclarationName(effect));
                 if (joining > 0) text += " " + string.Format(T("impact_join_leave"), KindName(effect.Meta).ToLowerInvariant());
-                Paragraph(block, text, 0, 88, CW, 20, 6, TextAnchor.MiddleCenter).color = joining > 0 ? Gold : Muted;
+                Text impact = Paragraph(block, text, 0, 88, CW, 20, 6, TextAnchor.UpperCenter);
+                impact.color = joining > 0 ? Gold : Muted;
+                float height = Mathf.Max(20, Mathf.Ceil(impact.preferredHeight));
+                ((RectTransform)impact.transform).sizeDelta = new Vector2(CW, height);
+                footerY = 88 + height + 8;
+                block.sizeDelta = new Vector2(CW, footerY + 24);
             }
             EditorHeader(block, T(exists ? "declaration" : "add_declaration"), () => { effect = null; Build(); });
 
@@ -433,12 +473,12 @@ namespace MetaRules.UI
             else if (!grant)
             {
                 Row(block, T("duration"), 66);
-                Segment(block, x, 66, w, new[] { T("while_member"), T("permanent") }, effect.Lifetime == Lifetime.Permanent ? 1 : 0,
+                Segment(block, x, 66, w, new[] { T(IsEquipment ? "while_equipped" : "while_member"), T("permanent") }, effect.Lifetime == Lifetime.Permanent ? 1 : 0,
                     i => effect.Lifetime = i == 1 ? Lifetime.Permanent : Lifetime.Membership);
             }
             Row(block, T("status"), statusY);
             Segment(block, x, statusY, w, new[] { T("enabled"), T("disabled") }, effect.Enabled ? 0 : 1, i => effect.Enabled = i == 0);
-            Footer(block, grant ? 116 : statusY + 32, () =>
+            Footer(block, footerY, () =>
             {
                 if (!Chosen(effect)) return;
                 RuleSet set = Current;
@@ -449,6 +489,7 @@ namespace MetaRules.UI
             { RuleSet set = Current; set.Declarations.RemoveAll(d => d.Id == effect.Id); effect = null; Save(set); }) : null);
 
             string helpText = effect.Kind == EffectKind.Trait ? "trait_help" : effect.Kind == EffectKind.Item ? "item_help" : grant ? "meta_help" : "stat_help";
+            if (IsEquipment) HelpBlock(T("equipment_rules_help"));
             HelpBlock(T(helpText));
         }
 
@@ -461,7 +502,7 @@ namespace MetaRules.UI
             RectTransform head = Block(66, "requirement");
             EditorHeader(head, T(exists ? "requirement" : "add_requirement"), () => { draft = null; Build(); });
             const float x = 62f, w = CW - x;
-            Row(head, T("match"), 24);
+            Row(head, T(IsEquipment ? "wearer_match" : "match"), 24);
             Segment(head, x, 24, w, new[] { T("all_short"), T("any_short") }, draft.Any ? 1 : 0, i => draft.Any = i == 1);
             Row(head, T("status"), 46);
             Segment(head, x, 46, w, new[] { T("enabled"), T("disabled") }, draft.Enabled ? 0 : 1, i => draft.Enabled = i == 0);
@@ -487,7 +528,7 @@ namespace MetaRules.UI
                 Label(row, T("invert_condition"), 0, 20, CW / 2 - 2, 18, () => { condition.Negated = !condition.Negated; Build(); });
                 Label(row, T("remove"), CW / 2 + 2, 20, CW / 2 - 2, 18, () => { draft.Conditions.RemoveAt(selectedCondition); selectedCondition = -1; Build(); }, Red);
             }
-            else Hint(T(draft.Conditions.Count == 0 ? "first_condition" : "select_condition"));
+            else Hint(T(draft.Conditions.Count == 0 ? IsEquipment ? "first_equipment_condition" : "first_condition" : "select_condition"));
 
             bool emptiesGroup = false;
             if (draft.Conditions.Count > 0)
@@ -515,10 +556,11 @@ namespace MetaRules.UI
                 draft = null; Save(set);
             }, () => { draft = null; Build(); }, exists ? (Action)(() =>
             { RuleSet set = Current; set.Restrictions.RemoveAll(r => r.Id == draft.Id); draft = null; Save(set); }) : null,
-            confirmEmpty ? T("confirm_empty") : null);
+            confirmEmpty ? T(IsEquipment ? "confirm_unequip" : "confirm_empty") : null);
         }
 
         static string Impact(int leaving, int total) =>
+            IsEquipment ? T(leaving == 0 ? "equipment_impact_none" : "equipment_impact_remove") :
             leaving == 0 ? T("impact_none") :
             leaving == total ? string.Format(T("impact_all"), total) :
             string.Format(T("impact_some"), leaving, total);
@@ -526,7 +568,7 @@ namespace MetaRules.UI
         static void BuildHelp()
         {
             EditorHeader(Block(18, "help"), T("help"), () => { help = false; Build(); });
-            var parts = new List<string> { T("admission_help"), T("trait_help"), T("item_help"), T("stat_help"), T("provenance_help") };
+            var parts = new List<string> { T(IsEquipment ? "equipment_rules_help" : "admission_help"), T("trait_help"), T("item_help"), T("stat_help"), T("provenance_help") };
             if (selected.Kind == MetaKind.Subspecies) parts.Add(T("subspecies_help"));
             foreach (string part in parts) HelpBlock(part);
         }
@@ -567,23 +609,27 @@ namespace MetaRules.UI
         {
             float y = ViewTop + 2f;
             string title = T(pickingCondition ? "add_condition" : effect != null && Chosen(effect) ? "change_selection" : "add_declaration");
-            if (!pickingCondition) title += "  ·  " + T(new[] { "traits", "equipment", "stats", "groups" }[Mathf.Clamp(category, 0, 3)]);
+            title += "  ·  " + (pickingCondition ? category == 0 ? T("traits") : KindName((MetaKind)(category - 1))
+                : T(new[] { "traits", "equipment", "stats", "groups" }[Mathf.Clamp(category, 0, 3)]));
             Small(root, "‹", Left, y, 16, LeavePicker, T("back"));
             Text(root, Fit(title, 8, CW - 22), Left + 22, y, CW - 22, 16, 8, HeaderGold, TextAnchor.MiddleLeft);
             y += 19f;
             if (pickingCondition)
             {
-                // Trait plus one tab per meta type: icons only, named in tooltips.
-                const int tabs = 10;
-                float tab = (CW - (tabs - 1) * 2f) / tabs;
+                // Two rows keep every category legible as new rule sources are added.
+                int tabs = 1 + Enum.GetValues(typeof(MetaKind)).Length;
+                const int columns = 6;
+                float tab = (CW - (columns - 1) * 2f) / columns;
                 for (int i = 0; i < tabs; i++)
                 {
                     int filter = i;
                     Sprite icon = i == 0 ? MetaSymbols.TraitSprite("strong") : MetaSymbols.KindSprite((MetaKind)(i - 1));
                     string label = i == 0 ? T("traits") : KindName((MetaKind)(i - 1));
-                    RectTransform token = Symbol(root, Left + i * (tab + 2f), y, tab, icon, null, () => SelectTab(filter), label);
+                    RectTransform token = Symbol(root, Left + i % columns * (tab + 2f), y + i / columns * (tab + 2f), tab,
+                        icon, null, () => SelectTab(filter), label);
                     if (category == i) Frame(token, 0);
                 }
+                y += Mathf.CeilToInt(tabs / (float)columns) * (tab + 2f);
             }
             else
             {
@@ -599,8 +645,8 @@ namespace MetaRules.UI
                     MetaSymbols.Tip(token, () => name);
                     if (category == i) Frame(token, 0);
                 }
+                y += 23f;
             }
-            y += 23f;
             Input(root, query, T("search_live"), Left, y, CW, 17, value => { query = value; Relayout(); });
             BuildResults();
         }
@@ -608,20 +654,26 @@ namespace MetaRules.UI
         static void SelectTab(int value)
         {
             if (category == value) return;
-            category = value; query = "";
+            category = value; query = ""; creationFeedback = "";
             Build();
         }
 
         static void BuildResults()
         {
             results = Choices();
+            if (!string.IsNullOrEmpty(creationFeedback)) HelpBlock(creationFeedback);
+            if (pickingCondition && category > 0 &&
+                ((MetaKind)(category - 1) == MetaKind.City || (MetaKind)(category - 1) == MetaKind.Kingdom))
+                HelpBlock(T("creation_territory"));
+            if (IsEquipment && !pickingCondition && category == 1) HelpBlock(T("equipment_slot_help"));
             foreach (Group group in results)
             {
                 group.View = NativeUi.CreateGroup(content, group.Title, group.Color);
                 if (group.Banners) NativeUi.SetCellSize(group.View, new Vector2(34f, 40f));
-                foreach (Choice entry in group.Items) entry.View = entry.Create(group.View.Grid);
+                if (group.Rows) NativeUi.MakeList(group.View, 2f);
             }
             Hint(T("no_results")).name = "no_results";
+            Hint(T("equipment_search_hint")).name = "equipment_search_hint";
             Relayout();
         }
 
@@ -629,20 +681,28 @@ namespace MetaRules.UI
         {
             if (results == null) return;
             int total = 0;
+            bool limited = false;
             foreach (Group group in results)
             {
-                int shown = 0;
+                int shown = 0, matched = 0;
                 foreach (Choice entry in group.Items)
                 {
-                    bool visible = Matches(entry.Search, query);
-                    entry.View.gameObject.SetActive(visible);
-                    if (visible) shown++;
+                    bool visible = entry.AlwaysVisible || Matches(entry.Search, query);
+                    if (visible && group.Rows && shown >= MemberRows) { visible = false; limited = true; }
+                    if (visible && entry.View == null) entry.View = entry.Create(group.View.Grid);
+                    if (entry.View != null)
+                    {
+                        entry.View.gameObject.SetActive(visible);
+                        if (visible) entry.View.SetAsLastSibling();
+                    }
+                    if (visible) { shown++; if (!entry.AlwaysVisible) matched++; }
                 }
                 group.View.Root.gameObject.SetActive(shown > 0);
-                if (group.View.Counter != null) group.View.Counter.text = shown.ToString();
-                total += shown;
+                if (group.View.Counter != null) group.View.Counter.text = matched.ToString();
+                total += matched;
             }
             content.Find("no_results")?.gameObject.SetActive(total == 0);
+            content.Find("equipment_search_hint")?.gameObject.SetActive(limited);
             LayoutRebuilder.ForceRebuildLayoutImmediate(content);
             content.anchoredPosition = Vector2.zero;
         }
@@ -716,6 +776,8 @@ namespace MetaRules.UI
             foreach (EquipmentAsset item in AssetManager.items.list)
             {
                 if (!item.show_in_meta_editor || !item.can_be_given) continue;
+                // Replacing the source item would immediately end its own grant.
+                if (IsEquipment && selected.Target is Item source && item.equipment_type == source.getAsset().equipment_type) continue;
                 EquipmentAsset entry = item;
                 Group group = entry.group_id != null && byId.TryGetValue(entry.group_id, out Group known) ? known : other;
                 string name = ItemName(entry.id);
@@ -752,7 +814,9 @@ namespace MetaRules.UI
 
         static List<Group> MetaChoices(MetaKind type)
         {
-            var group = new Group { Title = KindName(type), Banners = true };
+            bool equipment = type == MetaKind.Equipment;
+            var group = new Group { Title = KindName(type), Banners = !equipment, Rows = equipment };
+            if (!equipment) AddCreationChoices(group, type);
             foreach (MetaHandle value in WorldRules.Metas)
             {
                 MetaHandle meta = value;
@@ -763,9 +827,96 @@ namespace MetaRules.UI
                     draft.Conditions.Add(new Condition { Kind = ConditionKind.Membership, Meta = meta.Kind, MetaId = meta.Id });
                     selectedCondition = -1; picking = false; Build();
                 };
-                group.Items.Add(new Choice { Search = meta.Name, Create = grid => Marked(NativeUi.Banner(grid, meta, 34, select), marked) });
+                group.Items.Add(new Choice
+                {
+                    Search = meta.Name + " #" + meta.Id + " " + (equipment ? EquipmentLocation((Item)meta.Target) : ""),
+                    Create = grid => equipment ? EquipmentChoice(grid, meta, marked, select) : Marked(NativeUi.Banner(grid, meta, 34, select), marked)
+                });
             }
             return new List<Group> { group };
+        }
+
+        static void AddCreationChoices(Group group, MetaKind kind)
+        {
+            if (kind == MetaKind.Army)
+            {
+                Kingdom scope = WorldRules.KingdomOf(selected);
+                bool any = false;
+                foreach (City city in World.world.cities)
+                    if (city.isAlive() && city.kingdom != null && city.kingdom.isAlive() && !city.hasArmy() &&
+                        (scope == null || city.kingdom == scope) && (!(selected.Target is City sourceCity) || sourceCity == city))
+                    { AddCreationChoice(group, kind, city); any = true; }
+                if (!any) AddCreationChoice(group, kind);
+                return;
+            }
+            // Territory-based metas cannot be made valid merely by adding an empty object.
+            if (MetaCreation.For(kind) != null) AddCreationChoice(group, kind);
+        }
+
+        static void AddCreationChoice(Group group, MetaKind kind, City city = null)
+        {
+            group.Items.Add(new Choice
+            {
+                AlwaysVisible = true,
+                Create = grid =>
+                {
+                    string title = "+ " + string.Format(T("create_meta"), KindName(kind));
+                    string problem = MetaCreation.Problem(kind, selected, city);
+                    RectTransform button = Button(grid, 0, 0, 34, 40, Slot, () => CreateMeta(kind, city));
+                    Text(button, "+", 0, 0, 34, 28, 20, problem == null ? Good : Muted, TextAnchor.MiddleCenter);
+                    Picture(button, MetaSymbols.KindSprite(kind), 23, 2, 9, 9);
+                    if (city != null) Text(button, Fit(city.name, 5, 32), 1, 28, 32, 10, 5, Ink, TextAnchor.MiddleCenter);
+                    button.GetComponent<Button>().interactable = problem == null;
+                    MetaSymbols.Tip(button, () => title, () => (city != null ? city.name + " · " + city.kingdom?.name + "\n\n" : "") +
+                        T(problem ?? "create_meta_help"));
+                    return button;
+                }
+            });
+        }
+
+        static void CreateMeta(MetaKind kind, City city)
+        {
+            if (!picking || !ReferenceEquals(world, World.world?.map_stats)) return;
+            try
+            {
+                MetaHandle made = MetaCreation.Create(kind, selected, city);
+                if (made == null)
+                {
+                    creationFeedback = T(MetaCreation.Problem(kind, selected, city) ?? "creation_unavailable");
+                    Build(); return;
+                }
+                if (pickingCondition)
+                {
+                    draft.Conditions.Add(new Condition { Kind = ConditionKind.Membership, Meta = made.Kind, MetaId = made.Id });
+                    selectedCondition = -1;
+                }
+                else
+                {
+                    SetEffect(EffectKind.Meta, "");
+                    effect.Meta = made.Kind; effect.MetaId = made.Id;
+                }
+                picking = false; creationFeedback = ""; createdMeta = made;
+                NativeMetaWindows.OpenNative(made);
+            }
+            catch (Exception error)
+            {
+                WorldRules.Report(error);
+                creationFeedback = T("creation_failed"); Build();
+            }
+        }
+
+        static string EquipmentLocation(Item item) => item.getActor() != null ? item.getActor().getName() : item.getCity()?.name ?? T("no_wearer");
+
+        static RectTransform EquipmentChoice(Transform grid, MetaHandle meta, bool marked, Action select)
+        {
+            float width = Mathf.Min(CW, ((RectTransform)grid).rect.width > 1 ? ((RectTransform)grid).rect.width : CW) - 8;
+            RectTransform row = Button(grid, 0, 0, width, 34, Slot, select);
+            MetaSymbols.Draw(row, meta, 3, 3, 28);
+            Text(row, Fit(meta.Name, 7, width - 38), 35, 2, width - 38, 15, 7, Ink, TextAnchor.MiddleLeft);
+            string detail = "#" + meta.Id + " · " + EquipmentLocation((Item)meta.Target);
+            Text(row, Fit(detail, 6, width - 38), 35, 17, width - 38, 14, 6, Muted, TextAnchor.MiddleLeft);
+            MetaSymbols.Tip(row, () => meta.Name, () => detail);
+            return Marked(row, marked);
         }
 
         static RectTransform Marked(RectTransform token, bool marked)
@@ -804,6 +955,12 @@ namespace MetaRules.UI
                 bool perKingdom = type == MetaKind.City || type == MetaKind.Army;
                 var byKingdom = new Dictionary<long, Group>();
                 Group plain = null;
+                if ((!perKingdom && MetaCreation.For(type) != null) || type == MetaKind.Army)
+                {
+                    plain = new Group { Title = KindName(type), Banners = true };
+                    AddCreationChoices(plain, type);
+                    groups.Add(plain);
+                }
                 foreach (MetaHandle value in WorldRules.Metas)
                 {
                     MetaHandle meta = value;
@@ -844,13 +1001,15 @@ namespace MetaRules.UI
 
         static void BuildMembers()
         {
-            RectTransform head = Block(64, "members");
-            EditorHeader(head, T("members"), () => { members = false; Build(); });
-            Segment(head, 0, 22, CW, new[] { T("members"), T("add_members") }, addingMembers ? 1 : 0,
+            RectTransform head = Block(IsEquipment ? 42 : addingMembers ? 86 : 64, "members");
+            EditorHeader(head, People, () => { members = false; Build(); });
+            if (!IsEquipment) Segment(head, 0, 22, CW, new[] { T("members"), T("add_members") }, addingMembers ? 1 : 0,
                 i => { addingMembers = i == 1; memberQuery = ""; memberFeedback = ""; });
-            Input(head, memberQuery, T("search_live"), 0, 44, CW, 17, value => { memberQuery = value; FillMembers(); });
-            if (!string.IsNullOrEmpty(memberFeedback)) Hint(memberFeedback);
-            memberList = NativeUi.CreateGroup(content, T(addingMembers ? "add_members" : "members"), HeaderGold);
+            if (addingMembers) Segment(head, 0, 44, CW, new[] { T("all_candidates"), T("eligible_candidates") }, onlyEligible ? 1 : 0,
+                i => onlyEligible = i == 1);
+            Input(head, memberQuery, T("search_name_id"), 0, IsEquipment ? 22 : addingMembers ? 66 : 44, CW, 17, value => { memberQuery = value; FillMembers(); });
+            if (!string.IsNullOrEmpty(memberFeedback)) HelpBlock(memberFeedback);
+            memberList = NativeUi.CreateGroup(content, addingMembers ? T("add_members") : People, HeaderGold);
             NativeUi.MakeList(memberList, 2f);
             FillMembers();
 
@@ -871,7 +1030,7 @@ namespace MetaRules.UI
                 }
                 if (!set.Enabled) Hint(T("removed_paused"));
             }
-            HelpBlock(T("members_help"));
+            HelpBlock(T(IsEquipment ? "wearers_help" : "members_help"));
         }
 
         static void FillMembers()
@@ -879,10 +1038,11 @@ namespace MetaRules.UI
             if (memberList == null) return;
             Clear(memberList.Grid);
             List<Actor> all = addingMembers
-                ? World.world.units.getSimpleList().Where(a => a != null && a.isAlive() && WorldRules.Member(a, selected.Kind)?.Id != selected.Id).ToList()
+                ? World.world.units.getSimpleList().Where(a => a != null && a.isAlive() && !WorldRules.Belongs(a, selected)).ToList()
                 : WorldRules.Members(selected);
-            var matching = all.Where(a => Matches((a.getName() ?? "") + " #" + a.id, memberQuery)).OrderBy(a => a.getName()).ToList();
-            if (memberList.Counter != null) memberList.Counter.text = all.Count.ToString();
+            var matching = all.Where(a => Matches((a.getName() ?? "") + " #" + a.id, memberQuery) &&
+                (!addingMembers || !onlyEligible || WorldRules.CanAdd(selected, a))).OrderBy(a => a.getName()).ThenBy(a => a.id).ToList();
+            if (memberList.Counter != null) memberList.Counter.text = matching.Count.ToString();
             float rowW = Mathf.Min(CW, ((RectTransform)memberList.Grid).rect.width > 1 ? ((RectTransform)memberList.Grid).rect.width : CW) - 8;
             foreach (Actor value in matching.Take(MemberRows))
             {
@@ -891,19 +1051,23 @@ namespace MetaRules.UI
                 Avatar(row, actor);
                 RectTransform open = Button(row, 22, 0, rowW - 86, 22, null, () => { SelectedUnit.select(actor); ScrollWindow.showWindow("unit"); });
                 Text(open, Fit(actor.getName() ?? "#" + actor.id, 7, rowW - 86), 0, 0, rowW - 86, 22, 7, Ink, TextAnchor.MiddleLeft);
-                MetaSymbols.Tip(open, () => actor.getName(), () => T("open_unit"));
+                MetaSymbols.Tip(open, () => actor.getName() + " #" + actor.id, () => T("open_unit"));
                 if (addingMembers)
                 {
                     bool allowed = WorldRules.CanAdd(selected, actor);
                     RectTransform add = Label(row, T("add"), rowW - 62, 2, 60, 18, () =>
                     {
-                        memberFeedback = T(WorldRules.TryAdd(selected, actor) ? "member_added" : "member_add_blocked");
+                        memberFeedback = WorldRules.TryAdd(selected, actor) ? string.Format(T("member_added_named"), actor.getName()) : T(WorldRules.AdditionProblem(selected, actor));
                         Build();
                     });
                     add.GetComponent<UnityEngine.UI.Button>().interactable = allowed;
-                    if (!allowed) { Fade(add); MetaSymbols.Tip(add, () => T("member_add_blocked")); }
+                    if (!allowed)
+                    {
+                        Fade(add);
+                        MetaSymbols.Tip(add, () => actor.getName() + " #" + actor.id, () => T(WorldRules.AdditionProblem(selected, actor)));
+                    }
                 }
-                else Label(row, T("remove"), rowW - 62, 2, 60, 18, () => { WorldRules.Remove(selected, actor); Build(); }, Red);
+                else Label(row, T(IsEquipment ? "unequip" : "remove"), rowW - 62, 2, 60, 18, () => { WorldRules.Remove(selected, actor); Build(); }, Red);
             }
             if (matching.Count > MemberRows)
                 Text(Box(memberList.Grid, 0, 0, rowW, 16, "more"), string.Format(T("showing"), MemberRows, matching.Count), 0, 0, rowW, 16, 6, Muted, TextAnchor.MiddleCenter);
@@ -975,6 +1139,7 @@ namespace MetaRules.UI
                 int index = i;
                 RectTransform button = Button(parent, x + i * (each + gap), y, each, 18, Slot, () => { if (index != active) { pick(index); Build(); } });
                 Text(button, Fit(options[i], 7, each - 4), 2, 0, each - 4, 18, 7, i == active ? Gold : Muted, TextAnchor.MiddleCenter);
+                MetaSymbols.Tip(button, () => options[index]);
                 if (i == active) Frame(button, 0);
             }
         }
@@ -1015,5 +1180,12 @@ namespace MetaRules.UI
             input.text = value; input.characterLimit = 120;
             input.onValueChanged.AddListener(valueChanged => change(valueChanged));
         }
+    }
+
+    // The native Back button can reopen the rules window through window history.
+    // Rebuild on activation too, so it shows the edited name/banner and the draft.
+    public sealed class RulesWindowResume : MonoBehaviour
+    {
+        void OnEnable() => RulesWindow.ResumeAfterNativeEditor();
     }
 }

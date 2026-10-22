@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Create empty native languages, cultures, religions and clans directly from declaration pickers; requirement pickers also offer families and subspecies. An army can be created for a city without one, respecting the native one-army limit. Nobody is assigned during creation.
+- Open the game's own meta window to edit names, banners, colors and available traits. Return to rule or use native Back to continue the existing draft with the new meta selected. Creation entries stay available during search, including when no metas exist yet.
+- Preserve editor-created empty metas through native custom save data, including paused saves. Other groups retain native cleanup; armies still require a surviving city and kingdom. Cities and kingdoms must be founded with the game's territory tools.
+
+## 0.6.0
+
+- Add Rules to individual equipment windows: wearer declarations for traits, stats and meta grants, plus requirements that unequip incompatible wearers. Rules persist on the item; temporary effects follow actual equipment use and share provenance with group effects. Configured ownerless items are preserved.
+- Requirements can reference an exact equipped item. Equipment choices show name, ID and wearer/storage location, with searchable bounded results.
+- Put Add members at the top of the editor, add an eligible-candidate filter, clarify blocked additions and identify successful additions. Use equipment-specific labels and impact previews; size long grant previews and feedback to fit.
+- Cover equipment identity, admission, mixed sources, permanent effects, pause/resume, save/load and retained equipment requirements in engine tests.
+
 ## 0.5.0
 
 - Add living creatures from the Members page, with name/ID search and revalidated admission checks. All nine meta types are supported; manual family/subspecies transfers stay within the same species, and family transfers do not rewrite ancestry. Requirements, bans and structural limits remain enforced. Allow back lifts a removal; Add performs the actual transfer.

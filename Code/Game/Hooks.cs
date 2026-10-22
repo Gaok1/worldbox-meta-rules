@@ -3,6 +3,34 @@ using MetaRules.Core;
 
 namespace MetaRules.Game
 {
+    // Native equipment callers also update storage/loot bookkeeping after setting a
+    // slot. Audit after the transaction, never interrupt it halfway through.
+    [HarmonyPatch(typeof(ActorEquipmentSlot), nameof(ActorEquipmentSlot.setItem))]
+    static class EquipmentChanged
+    {
+        static void Postfix() => WorldRules.RescanSoon();
+    }
+
+    [HarmonyPatch(typeof(ActorEquipmentSlot), nameof(ActorEquipmentSlot.takeAwayItem))]
+    static class EquipmentRemoved
+    {
+        static void Postfix() => WorldRules.RescanSoon();
+    }
+
+    // An unequipped configured item without a city must not disappear with its rules.
+    [HarmonyPatch(typeof(Item), nameof(Item.isReadyForRemoval))]
+    static class KeepConfiguredEquipment
+    {
+        static bool Prefix(Item __instance, ref bool __result)
+        {
+            if (__instance.data == null || __instance.shouldbe_removed) return true;
+            RuleSet set = WorldRules.Get(WorldRules.Handle(MetaKind.Equipment, __instance, __instance.data));
+            if (set == null || set.Restrictions.Count == 0 && set.Declarations.Count == 0 && set.Banned.Count == 0) return true;
+            __result = false;
+            return false;
+        }
+    }
+
     [HarmonyPatch(typeof(Army), nameof(Army.isReadyForRemoval))]
     static class KeepConfiguredArmy
     {

@@ -41,7 +41,27 @@ Traços anteriores ao benefício são preservados. Se vários grupos concedem o 
 
 O equipamento é entregue **uma vez por pertencimento**, substituindo o item daquele espaço (o antigo vai para o depósito da cidade). Se depois a criatura trocar, melhorar ou quebrar o item, o mod não o recria. Ao sair, o item "enquanto pertencer" só é removido se ainda for o mesmo; o permanente fica. Só criaturas que usam itens recebem equipamento; se vários grupos declararem o mesmo espaço, vale o primeiro.
 
+### Criar um meta pelo seletor
+
+Use o **+** na seção do tipo desejado para criar um idioma, cultura, religião ou clã vazio. No seletor de exigências, também é possível criar famílias e subespécies. O **+** de exército identifica a cidade; só aparece para cidades sem exército, respeitando o reino da origem quando houver. Cada cidade mantém o limite nativo de um exército. A criação continua disponível durante a busca, mesmo quando ainda não existe nenhum meta daquele tipo.
+
+O meta nasce com **zero membros** e abre na própria janela do jogo. Edite nome, emblema, cores e traits disponíveis pelos controles nativos. **Voltar à regra** ou o botão de voltar do jogo retoma seu rascunho com o novo meta selecionado. A regra só entra em vigor ao salvar; cancelar a regra não apaga o meta criado.
+
+A espécie segue o grupo de origem ou o portador do equipamento quando possível; grupos sociais usam humanos como alternativa quando precisam de modelos de nomes. Nenhum fundador é inventado e ninguém é transferido. Metas criados pelo editor são preservados vazios, inclusive após salvar e carregar. Exércitos continuam dependendo da cidade e do reino. Cidades e reinos precisam de território e devem ser fundados pelas ferramentas do jogo.
+
+### Regras de um equipamento individual
+
+Abra os detalhes de um item e clique em **Regras**. As declarações são aplicadas ao **portador**: traços temporários ou permanentes, bônus de atributos e entrada em outros metas. As exigências definem quem pode usar esse item, por traços, pertencimento a metas ou uso de outro equipamento específico. Isso vale para aquele item, identificado pelo ID, e não para todas as cópias do mesmo modelo.
+
+Exemplo: uma espada só pode ser usada por membros da Casa do Sol; enquanto equipada, concede Corajoso, +10 de dano e entrada em uma religião específica. Também é possível exigir que um membro de um meta esteja usando um equipamento específico.
+
+Itens guardados não concedem benefícios. Ao desequipar, trocar, destruir ou pausar, os benefícios temporários desaparecem nas próximas verificações; traços permanentes e vínculos concedidos continuam. Fontes de traços e bônus são combinadas entre grupos e equipamentos. Declarações de outros equipamentos usam espaços diferentes do item que as concede, para preservar a fonte dos benefícios. Mudanças de meta feitas pelo mod também respeitam as exigências dos equipamentos mantidos.
+
+Quem não cumprir as exigências é desequipado na próxima verificação. O item volta ao depósito da cidade, se houver; sem cidade, o item configurado é preservado sem portador. Isso também vale para itens amaldiçoados. **Portadores → Desequipar** retira o item imediatamente, mesmo com as regras pausadas, e bloqueia a criatura enquanto as regras estiverem ativas; **Readmitir** libera o uso novamente. O seletor de condições mostra nome, ID e portador/local do item, com busca e até 200 resultados por vez.
+
 ### Membros
+
+O botão **+ Adicionar membros** aparece no início do editor. O filtro **Podem entrar** mostra apenas candidatos elegíveis; os botões indisponíveis explicam o bloqueio ao passar o mouse.
 
 A página **Membros** lista as criaturas do meta (com busca; clique no nome para abrir). **Adicionar membros** busca criaturas vivas por nome ou ID e transfere a selecionada para este meta, respeitando exigências e limites do jogo. Família e subespécie só permitem transferência dentro da mesma espécie; mudar de família não altera pais/ascendência. **Remover** expulsa e mantém fora enquanto as regras estiverem ativas. **Readmitir** retira esse bloqueio; depois use **Adicionar** para trazer de volta imediatamente.
 
@@ -66,6 +86,6 @@ O idioma acompanha a configuração do jogo: Português (Brasil) — usado tamb�
 - Uma criatura não pode ficar sem subespécie. Se não cumprir as exigências, só muda para outra subespécie compatível da mesma espécie. Sem alternativa, permanece e aparece como incompatível. A atribuição inicial continua permitida para criar novas criaturas corretamente.
 - Declarações de traços e atributos se aplicam aos personagens, e não aos traços do próprio reino, cultura ou idioma.
 - O processamento ocorre em lotes; em mundos grandes, mudanças podem levar alguns segundos.
-- Compilação e testes do motor foram verificados. O log confirmou o carregamento da versão 0.1.0; a interface e os equipamentos da 0.3.0 ainda precisam ser conferidos em partida.
+- Compilação e testes do motor foram verificados; as novas telas e interações de equipamentos ainda precisam de conferência visual em partida.
 
 Consulte o [README em inglês](README.md) para os comandos de desenvolvimento e os detalhes de persistência. Código MIT; os créditos da interface estão em [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).

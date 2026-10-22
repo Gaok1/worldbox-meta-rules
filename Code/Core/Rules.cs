@@ -3,7 +3,8 @@ using System.Collections.Generic;
 
 namespace MetaRules.Core
 {
-    public enum MetaKind { Army, Clan, Culture, Religion, City, Kingdom, Language, Family, Subspecies }
+    // Append only: numeric values are persisted in existing saves.
+    public enum MetaKind { Army, Clan, Culture, Religion, City, Kingdom, Language, Family, Subspecies, Equipment }
     public enum ConditionKind { Trait, Membership }
     public enum EffectKind { Trait, Stat, Item, Meta }
     public enum Lifetime { Membership, Permanent }
@@ -21,7 +22,7 @@ namespace MetaRules.Core
         {
             bool result = Kind == ConditionKind.Trait
                 ? !string.IsNullOrEmpty(Trait) && subject.HasTrait(Trait)
-                : MetaId >= 0 && subject.MemberOf(Meta) == MetaId;
+                : MetaId >= 0 && (Meta == MetaKind.Equipment ? subject.HasEquipment(MetaId) : subject.MemberOf(Meta) == MetaId);
             return Negated ? !result : result;
         }
     }
@@ -85,6 +86,7 @@ namespace MetaRules.Core
         long Id { get; }
         long MemberOf(MetaKind kind);
         bool HasTrait(string id);
+        bool HasEquipment(long id);
         bool AddTrait(string id);
         void RemoveTrait(string id);
         // Equipment: null slot means this subject cannot carry the item.
@@ -131,7 +133,7 @@ namespace MetaRules.Core
 
         // A creature can be made to adopt or move into these. Family and subspecies are
         // biological and cannot be granted.
-        public static bool Grantable(MetaKind kind) => kind != MetaKind.Family && kind != MetaKind.Subspecies;
+        public static bool Grantable(MetaKind kind) => kind >= MetaKind.Army && kind <= MetaKind.Language;
 
         // Joining must satisfy the target's requirements and every group the subject keeps.
         public static bool CanJoin(ISubject subject, MetaKind kind, long id, RuleSet target, IEnumerable<RuleSet> kept) =>
@@ -154,6 +156,7 @@ namespace MetaRules.Core
             public long Id => inner.Id;
             public long MemberOf(MetaKind value) => changes.TryGetValue(value, out long id) ? id : inner.MemberOf(value);
             public bool HasTrait(string trait) => inner.HasTrait(trait);
+            public bool HasEquipment(long id) => inner.HasEquipment(id);
             public bool AddTrait(string trait) => false;
             public void RemoveTrait(string trait) { }
             public string SlotOf(string item) => null;
@@ -187,6 +190,17 @@ namespace MetaRules.Core
 
         // Evaluate a membership snapshot before applying effects: ordering of groups cannot
         // make a declaration qualify its own admission or recursively grant memberships.
+        public static Evaluation Evaluate(ISubject subject, IEnumerable<RuleSet> memberships, IEnumerable<RuleSet> equipment) =>
+            Evaluate(Sources(subject, memberships, equipment));
+
+        static IEnumerable<RuleSet> Sources(ISubject subject, IEnumerable<RuleSet> memberships, IEnumerable<RuleSet> equipment)
+        {
+            // Existing groups keep their precedence. Every equipped item is a separate
+            // source, and an ineligible item cannot grant its own admission requirements.
+            foreach (RuleSet set in memberships) yield return set;
+            foreach (RuleSet set in equipment) if (set.Allows(subject)) yield return set;
+        }
+
         public static Evaluation Evaluate(IEnumerable<RuleSet> sets)
         {
             var result = new Evaluation();

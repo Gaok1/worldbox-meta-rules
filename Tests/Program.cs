@@ -11,6 +11,11 @@ sealed class Subject : ISubject
     public readonly HashSet<string> Rejected = new HashSet<string>();
     public long MemberOf(MetaKind kind) => Groups.TryGetValue(kind, out long id) ? id : -1;
     public bool HasTrait(string id) => Traits.Contains(id);
+    public bool HasEquipment(long id)
+    {
+        foreach (var slot in Slots.Values) if (slot.Id == id) return true;
+        return false;
+    }
     public bool AddTrait(string id) => !Rejected.Contains(id) && Traits.Add(id);
     public void RemoveTrait(string id) => Traits.Remove(id);
     // Equipment: item id "slot:name", e.g. "weapon:sword".
@@ -59,6 +64,7 @@ static class Program
             var actor = new Subject();
             foreach (MetaKind kind in Enum.GetValues(typeof(MetaKind)))
             {
+                if (kind == MetaKind.Equipment) continue; // Equipment is many simultaneous instances, not one membership.
                 actor.Groups[kind] = 42;
                 var c = new Condition { Kind = ConditionKind.Membership, Meta = kind, MetaId = 42 };
                 Assert(c.Matches(actor), "matching instance rejected: " + kind);
@@ -357,6 +363,7 @@ static class Program
         {
             foreach (MetaKind kind in Enum.GetValues(typeof(MetaKind)))
             {
+                if (kind == MetaKind.Equipment) continue; // Equipment is many simultaneous instances, not one membership.
                 var actor = new Subject(); actor.Groups[kind] = 1;
                 var target = new RuleSet { Banned = new List<long> { actor.Id }, Restrictions = new List<Restriction> {
                     new Restriction { Conditions = new List<Condition> { new Condition { Trait = "genius" } } } } };
@@ -368,6 +375,90 @@ static class Program
                 actor.Traits.Clear();
                 Assert(!RuleEngine.CanJoin(actor, kind, 2, target, new RuleSet[0]), "readmission bypassed requirements: " + kind);
             }
+        });
+        Test("equipment conditions match exact instances across simultaneous slots", () =>
+        {
+            var actor = new Subject();
+            long sword = actor.Equip("weapon:sword"), ring = actor.Equip("ring:gold");
+            var condition = new Condition { Kind = ConditionKind.Membership, Meta = MetaKind.Equipment, MetaId = sword };
+            Assert(condition.Matches(actor), "equipped sword not found");
+            condition.MetaId = ring; Assert(condition.Matches(actor), "second equipped item not found");
+            actor.Unequip("ring"); Assert(!condition.Matches(actor), "removed item still matched");
+            condition.MetaId = sword; actor.Equip("weapon:sword");
+            Assert(!condition.Matches(actor), "another copy of the same asset matched");
+            condition.Negated = true; Assert(condition.Matches(actor), "NOT equipment failed");
+        });
+        Test("equipment source grants traits stats and metas only to eligible wearers", () =>
+        {
+            var actor = new Subject(); var ledger = new TraitLedger();
+            var sword = new RuleSet {
+                Restrictions = new List<Restriction> { new Restriction { Conditions = new List<Condition> { new Condition { Trait = "knight" } } } },
+                Declarations = new List<Declaration> { Trait("knight"), Trait("brave"),
+                    new Declaration { Kind = EffectKind.Stat, Value = "damage", Amount = 10 },
+                    new Declaration { Kind = EffectKind.Meta, Meta = MetaKind.Clan, MetaId = 42 } }
+            };
+            Evaluation desired = RuleEngine.Evaluate(actor, new RuleSet[0], new[] { sword });
+            Assert(desired.Empty, "item bootstrapped its own admission");
+            actor.Traits.Add("knight");
+            desired = RuleEngine.Evaluate(actor, new RuleSet[0], new[] { sword });
+            Assert(desired.Stats["damage"] == 10 && desired.Metas[MetaKind.Clan] == 42, "item effects missing");
+            RuleEngine.Reconcile(actor, desired, ledger);
+            Assert(actor.HasTrait("brave"), "item trait missing");
+            actor.Traits.Remove("knight");
+            desired = RuleEngine.Evaluate(actor, new RuleSet[0], new[] { sword });
+            Assert(desired.Empty && RuleEngine.RequiresExit(actor, sword), "ineligible item still grants effects");
+            RuleEngine.Reconcile(actor, desired, ledger);
+            Assert(!actor.HasTrait("brave"), "temporary item trait leaked");
+        });
+        Test("equipment and meta sources share provenance without stacking repeatedly", () =>
+        {
+            var actor = new Subject(); var ledger = new TraitLedger();
+            var clan = new RuleSet { Declarations = new List<Declaration> { Trait("brave"),
+                new Declaration { Kind = EffectKind.Stat, Value = "armor", Amount = 3 } } };
+            var ring = new RuleSet { Declarations = new List<Declaration> { Trait("brave"), Trait("wise", Lifetime.Permanent),
+                new Declaration { Kind = EffectKind.Stat, Value = "armor", Amount = 5 } } };
+            var helmet = new RuleSet { Declarations = new List<Declaration> {
+                new Declaration { Kind = EffectKind.Stat, Value = "armor", Amount = 2 } } };
+            for (int i = 0; i < 3; i++)
+            {
+                Evaluation desired = RuleEngine.Evaluate(actor, new[] { clan }, new[] { ring, helmet });
+                Assert(desired.Stats["armor"] == 10, "equipment bonus accumulated or lost a source");
+                RuleEngine.Reconcile(actor, desired, ledger);
+            }
+            RuleEngine.Reconcile(actor, RuleEngine.Evaluate(actor, new[] { clan }, new RuleSet[0]), ledger);
+            Assert(actor.HasTrait("brave") && actor.HasTrait("wise"), "unequip lost a shared or permanent trait");
+            RuleEngine.Reconcile(actor, RuleEngine.Evaluate(actor, new RuleSet[0], new RuleSet[0]), ledger);
+            Assert(!actor.HasTrait("brave") && actor.HasTrait("wise"), "last source cleanup failed");
+        });
+        Test("equipment pause bans and save round trip preserve rule behavior", () =>
+        {
+            var actor = new Subject(); actor.Equip("weapon:sword");
+            var item = new RuleSet { Declarations = new List<Declaration> { Trait("brave") }, Banned = new List<long> { actor.Id } };
+            var options = new JsonSerializerOptions { IncludeFields = true };
+            item = JsonSerializer.Deserialize<RuleSet>(JsonSerializer.Serialize(item, options), options);
+            Assert(RuleEngine.Valid(item), "equipment rules did not round trip");
+            Assert(RuleEngine.Evaluate(actor, new RuleSet[0], new[] { item }).Empty, "banned wearer received effects");
+            item.Banned.Clear(); item.Enabled = false;
+            Assert(RuleEngine.Evaluate(actor, new RuleSet[0], new[] { item }).Empty && !RuleEngine.RequiresExit(actor, item), "paused item still active");
+            item.Enabled = true;
+            Assert(RuleEngine.Evaluate(actor, new RuleSet[0], new[] { item }).Temporary.Contains("brave"), "resuming lost effects");
+        });
+        Test("membership previews respect equipped item requirements and equipment conditions", () =>
+        {
+            var actor = new Subject(); actor.Groups[MetaKind.Clan] = 10;
+            long id = actor.Equip("weapon:sword");
+            var item = new RuleSet { Restrictions = new List<Restriction> { new Restriction { Conditions = new List<Condition> {
+                new Condition { Kind = ConditionKind.Membership, Meta = MetaKind.Clan, MetaId = 10 } } } } };
+            Assert(!RuleEngine.CanJoin(actor, MetaKind.Clan, 20, null, new[] { item }), "move broke equipped item's requirement");
+            var target = new RuleSet { Restrictions = new List<Restriction> { new Restriction { Conditions = new List<Condition> {
+                new Condition { Kind = ConditionKind.Membership, Meta = MetaKind.Equipment, MetaId = id } } } } };
+            Assert(RuleEngine.CanJoin(actor, MetaKind.Language, 7, target, new[] { item }), "move lost equipment snapshot");
+            actor.Unequip("weapon");
+            Assert(!RuleEngine.CanJoin(actor, MetaKind.Language, 7, target, new[] { item }), "missing item allowed admission");
+            Assert(!RuleEngine.Grantable(MetaKind.Equipment), "item instances must not be granted as membership");
+            Assert(!RuleEngine.Valid(new RuleSet { Declarations = new List<Declaration> {
+                new Declaration { Kind = EffectKind.Meta, Meta = MetaKind.Equipment, MetaId = id } } }), "invalid equipment membership grant accepted");
+            Assert((int)MetaKind.Subspecies == 8 && (int)MetaKind.Equipment == 9, "existing save enum IDs changed");
         });
         Console.WriteLine(passed + " behavioral tests passed.");
     }

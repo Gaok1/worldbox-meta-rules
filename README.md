@@ -29,6 +29,26 @@ Examples:
 
 Trait selection includes traits registered by other mods. UI text is available in English and Brazilian Portuguese (`br`, also used for the game's `pt` language); any other game language falls back to English.
 
+## Create a group while choosing a rule target
+
+Click **+** in a group section of the picker to create an empty native language, culture, religion or clan. Requirement pickers also offer families and subspecies. An army's **+** shows its city; it is offered only for cities without an army, within the current kingdom when applicable. Each city keeps its native limit of one army. Creation remains accessible even when a search has no matches or no groups of that type exist.
+
+The new meta starts with **zero members** and opens in the game's own details window. Use the native name field, banner customization and available trait tabs, then **Return to rule** (or native Back) to resume your draft with the new meta selected. Saving the rule remains a separate step. Canceling the rule does not delete a group you created.
+
+Created metas use native IDs, managers, species defaults and world save data. Species follows the source group or equipment wearer where possible, with a human fallback for social groups that need naming templates. No founder is fabricated and nobody is transferred. The mod preserves these metas while empty, including after saving and loading; an army still depends on its city and kingdom. Cities and kingdoms must be founded through the game's world tools because they need territory.
+
+## Rules on an individual equipment item
+
+Open an item's native details window and select **Rules**. Declarations benefit its **wearer** with temporary/permanent traits, stat bonuses and membership grants. Requirements restrict who may wear it using traits, specific metas or another individual equipped item. Rules follow the unique item ID, not every copy of its asset. Meta requirements can also demand that exact equipment instance.
+
+For example, a sword may require membership in the Sun clan and grant Courageous, +10 damage and entry into a particular religion. The editor uses **Wearers**, **While equipped** and an unequip impact preview in this context. Equipment condition choices show the name, ID and wearer/storage location; search narrows the first 200 results.
+
+Stored items grant nothing. Unequipping, replacing, destroying or pausing a source removes its temporary effects on the next scan; permanent traits and granted memberships remain. Item and group trait sources share provenance, and stat bonuses stack. Equipment declarations offered by an item use other slots so they do not replace their own source. Group sources keep their precedence over equipment sources. Membership moves initiated by the mod also check the requirements of equipped items the creature keeps.
+
+Incompatible wearers are unequipped on the next bounded scan, including cursed items. The item returns to city storage when available; configured ownerless items are preserved when there is no city. Native equipment transactions complete before the audit so loot and storage bookkeeping stay consistent. **Wearers → Unequip** removes the item immediately, even while paused, and also bans the creature from this item while rules are active; **Allow back** lifts that ban.
+
+The **+ Add members** shortcut now appears at the top of a meta's editor. Search by name/ID, select **Can join** to show eligible candidates, and hover unavailable Add buttons to see the reason. Successful additions identify the creature in the confirmation.
+
 ## Behavior
 
 - Rules are embedded in the target meta's custom save data. Trait provenance is stored on affected actors. Each world has its own rules.
@@ -43,7 +63,7 @@ Trait selection includes traits registered by other mods. UI text is available i
 - City admission checks the city and its kingdom together. Expulsion from a city or kingdom uses native faction departure, ending army service and city citizenship and returning the unit to its default neutral/wild kingdom. Conquest first keeps political pointers consistent; eligibility is enforced during the next scan.
 - A creature cannot have a null subspecies. An incompatible member transfers only to an eligible alternative of the same species. Without an alternative it remains, visibly counted as incompatible. Initial subspecies assignment is allowed so newborn creatures initialize correctly.
 - Admission checks use current membership and traits; joining a group cannot qualify itself by the trait that group would grant afterward.
-- Conditions reference another meta; declarations grant actor traits, equipment and stats. They do not automatically transfer actors between clans, cultures or other metas.
+- Conditions reference traits, specific metas or equipped item instances. Membership declarations transfer actors only after checking destination, retained group and equipment requirements.
 
 ## Install
 
@@ -64,6 +84,14 @@ python3 tools/package.py
 
 On Linux the project defaults to `~/.local/share/Steam/steamapps/common/worldbox/worldbox_Data`. Build references use the game's installed assemblies and NML publicized assembly; proprietary game binaries are not distributed.
 
-Engine tests cover individual meta identity, admission/continued-membership decisions, overlapping trait sources, permanent grants, provenance after save/load, and additive stats. Local compilation has been checked against the installed game. Version 0.1.0 was confirmed loaded in the game log; **the 0.3.0 interface and equipment declarations still need a playtest.**
+After building, the native lifecycle contracts can run against the original installed game assembly:
+
+```sh
+dotnet run --project Tests/NativeContracts -- "/path/to/worldbox/worldbox_Data/Managed" bin/Debug/netstandard2.1/MetaRules.dll
+```
+
+These contracts exercise all seven creation types' empty-object preservation, native-data JSON round trips, dead/unmarked cleanup, and army ownership dependencies. They do not start Unity or execute the creation factories and editors.
+
+Engine tests cover individual meta/equipment identity, admission and ongoing eligibility, overlapping group/item trait sources, permanent grants, save/load, and additive stats. Local compilation has been checked against the installed game. **The new equipment and creation screens still need a visual playtest.** For creation, check each supported type, native banner/trait editing, both return buttons, canceling a draft, saving/reloading an empty group, and a city already at its army limit.
 
 MIT. See [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) for UI attribution.

@@ -13,6 +13,7 @@ namespace MetaRules.UI
     {
         public static Sprite KindSprite(MetaKind kind)
         {
+            if (kind == MetaKind.Equipment) return EquipmentSprite();
             if (Enum.TryParse(kind.ToString(), out MetaType type))
             {
                 MetaTypeAsset asset = AssetManager.meta_type_library.getAsset(type);
@@ -53,6 +54,11 @@ namespace MetaRules.UI
         public static void Draw(Transform parent, MetaHandle meta, float x, float y, float size)
         {
             if (meta == null) return;
+            if (meta.Target is Item item)
+            {
+                Picture(parent, ItemSprite(item.getAsset().id), x, y, size, size);
+                return;
+            }
             Sprite background = null, icon = null, overlay = null, frame = null;
             ColorAsset color = null;
             bool tintIcon = true;

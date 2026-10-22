@@ -13,7 +13,7 @@ namespace MetaRules.Game
         public object Target;
         public long Id => Data.id;
         public string Key => Kind + ":" + Id;
-        public string Name => string.IsNullOrEmpty(Data.name) ? "#" + Id : Data.name;
+        public string Name => Target is Item item ? item.getName() : string.IsNullOrEmpty(Data.name) ? "#" + Id : Data.name;
     }
 
     public sealed class ActorSubject : ISubject
@@ -23,6 +23,12 @@ namespace MetaRules.Game
         public long Id => actor.id;
         public long MemberOf(MetaKind kind) => WorldRules.Member(actor, kind)?.Id ?? -1;
         public bool HasTrait(string id) => actor.hasTrait(id);
+        public bool HasEquipment(long id)
+        {
+            if (actor.equipment != null)
+                foreach (Item item in actor.equipment.getItems()) if (item.data.id == id) return true;
+            return false;
+        }
         public bool AddTrait(string id)
         {
             // Do not remove opposite traits or execute a partial conflicting addition.
@@ -213,6 +219,8 @@ namespace MetaRules.Game
             foreach (Language m in World.world.languages) Add(Handle(MetaKind.Language, m, m.data));
             foreach (Family m in World.world.families) Add(Handle(MetaKind.Family, m, m.data));
             foreach (Subspecies m in World.world.subspecies) Add(Handle(MetaKind.Subspecies, m, m.data));
+            foreach (Item m in World.world.items)
+                if (!m.shouldbe_removed) Add(Handle(MetaKind.Equipment, m, m.data));
             Metas.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase));
         }
 
@@ -227,6 +235,46 @@ namespace MetaRules.Game
                 if (set != null && set.Enabled) result.Add(set);
             }
             return result;
+        }
+
+        static Evaluation Effects(Actor actor) => RuleEngine.Evaluate(new ActorSubject(actor), Applicable(actor), EquipmentRules(actor));
+
+        static IEnumerable<RuleSet> EquipmentRules(Actor actor)
+        {
+            if (actor.equipment == null) yield break;
+            foreach (Item item in actor.equipment.getItems())
+            {
+                RuleSet set = Get(Handle(MetaKind.Equipment, item, item.data));
+                if (set != null) yield return set;
+            }
+        }
+
+        // Inspect actual slots: a creature can wear several different rule sources.
+        public static bool Belongs(Actor actor, MetaHandle target) => target != null &&
+            (target.Kind == MetaKind.Equipment ? new ActorSubject(actor).HasEquipment(target.Id) : Member(actor, target.Kind)?.Id == target.Id);
+
+        static void EnforceEquipment(Actor actor)
+        {
+            if (actor.equipment == null) return;
+            var subject = new ActorSubject(actor);
+            foreach (ActorEquipmentSlot slot in actor.equipment)
+            {
+                Item item = slot.getItem();
+                if (!RuleEngine.RequiresExit(subject, Get(Handle(MetaKind.Equipment, item, item.data)))) continue;
+                UnequipToStorage(actor, slot);
+            }
+        }
+
+        static void UnequipToStorage(Actor actor, ActorEquipmentSlot slot)
+        {
+            Item item = slot.getItem();
+            slot.takeAwayItem();
+            if (actor.city != null && actor.city.isAlive())
+            {
+                actor.city.data.equipment.addItem(actor.city, item);
+                actor.city._storage_version++;
+            }
+            actor.setStatsDirty();
         }
 
         static ActorState State(Actor actor)
@@ -249,11 +297,13 @@ namespace MetaRules.Game
                 if (enforceMembership)
                 {
                     Mutating = true;
+                    EnforceEquipment(actor);
                     EnforceMembership(actor);
                     GrantMemberships(actor);
+                    EnforceEquipment(actor);
                     Mutating = false;
                 }
-                Evaluation desired = RuleEngine.Evaluate(Applicable(actor));
+                Evaluation desired = Effects(actor);
                 if (desired.Empty && !actors.ContainsKey(actor.id))
                 {
                     actor.data.get(LedgerKey, out string savedLedger, null);
@@ -335,6 +385,7 @@ namespace MetaRules.Game
                 case MetaKind.Language: { Language m = World.world.languages.get(id); meta = Handle(kind, m, m?.data); break; }
                 case MetaKind.Family: { Family m = World.world.families.get(id); meta = Handle(kind, m, m?.data); break; }
                 case MetaKind.Subspecies: { Subspecies m = World.world.subspecies.get(id); meta = Handle(kind, m, m?.data); break; }
+                case MetaKind.Equipment: { Item m = World.world.items.get(id); meta = m == null || m.shouldbe_removed ? null : Handle(kind, m, m.data); break; }
                 default: return null;
             }
             return meta != null && meta.Target is NanoObject nano && !nano.isRekt() ? meta : null;
@@ -349,7 +400,7 @@ namespace MetaRules.Game
 
         static void GrantMemberships(Actor actor)
         {
-            Evaluation desired = RuleEngine.Evaluate(Applicable(actor));
+            Evaluation desired = Effects(actor);
             if (desired.Metas.Count == 0) return;
             foreach (MetaKind kind in GrantOrder)
             {
@@ -434,6 +485,7 @@ namespace MetaRules.Game
             var kept = new List<RuleSet>();
             foreach (MetaKind other in Enum.GetValues(typeof(MetaKind)))
                 if (!changes.ContainsKey(other)) kept.Add(Get(Member(actor, other)));
+            kept.AddRange(EquipmentRules(actor));
             return RuleEngine.CanMove(subject, changes, targets, kept) ? apply : null;
         }
 
@@ -488,7 +540,9 @@ namespace MetaRules.Game
             int joining = 0;
             List<Actor> all = Members(declarer);
             members = all.Count;
-            foreach (Actor actor in all) if (Plan(actor, kind, id) != null) joining++;
+            RuleSet source = declarer?.Kind == MetaKind.Equipment ? Get(declarer) : null;
+            foreach (Actor actor in all)
+                if (!RuleEngine.RequiresExit(new ActorSubject(actor), source) && Plan(actor, kind, id) != null) joining++;
             return joining;
         }
 
@@ -507,14 +561,32 @@ namespace MetaRules.Game
         {
             var result = new List<Actor>();
             if (target == null || World.world?.units == null) return result;
+            if (target.Target is Item item)
+            {
+                Actor wearer = item.getActor();
+                if (wearer != null && wearer.isAlive() && Belongs(wearer, target)) result.Add(wearer);
+                return result;
+            }
             foreach (Actor actor in World.world.units.getSimpleList())
-                if (actor != null && actor.isAlive() && Member(actor, target.Kind)?.Id == target.Id) result.Add(actor);
+                if (actor != null && actor.isAlive() && Belongs(actor, target)) result.Add(actor);
             return result;
         }
 
         public static bool CanAdd(MetaHandle meta, Actor actor) => Ready && !Mutating && meta != null &&
             ReferenceEquals(world, World.world?.map_stats) && Find(meta.Kind, meta.Id)?.Target == meta.Target &&
             Plan(actor, meta.Kind, meta.Id, true) != null && !IsBroken(meta);
+
+        public static string AdditionProblem(MetaHandle meta, Actor actor)
+        {
+            if (!Ready || Mutating || meta == null || actor == null || !actor.isAlive() || IsBroken(meta) ||
+                !ReferenceEquals(world, World.world?.map_stats) || Find(meta.Kind, meta.Id)?.Target != meta.Target)
+                return "member_add_unavailable";
+            RuleSet set = Get(meta);
+            if (set != null && set.Enabled && set.Banned.Contains(actor.id)) return "member_add_removed";
+            if (!RuleEngine.CanJoin(new ActorSubject(actor), meta.Kind, meta.Id, set, new RuleSet[0]))
+                return "member_add_requirements";
+            return "member_add_blocked";
+        }
 
         // Reuse the declaration planner: manual additions obey requirements, bans and
         // native structural limits too. Revalidate on click rather than trusting the UI.
@@ -538,10 +610,25 @@ namespace MetaRules.Game
         // Removing an individual bans it from this meta and expels it now.
         public static void Remove(MetaHandle meta, Actor actor)
         {
+            if (!Ready || Mutating || actor == null || !actor.isAlive() || meta == null || IsBroken(meta) ||
+                !ReferenceEquals(world, World.world?.map_stats) || Find(meta.Kind, meta.Id)?.Target != meta.Target || !Belongs(actor, meta)) return;
             RuleSet set = Get(meta) ?? new RuleSet();
-            if (actor == null || set.Banned.Contains(actor.id)) return;
-            set.Banned.Add(actor.id);
-            Save(meta, set);
+            if (!set.Banned.Contains(actor.id))
+            {
+                set.Banned.Add(actor.id);
+                Save(meta, set);
+            }
+            // A direct Unequip action works even while automatic rules are paused.
+            if (meta.Target is Item item)
+            {
+                try
+                {
+                    Mutating = true;
+                    UnequipToStorage(actor, actor.equipment.getSlot(item.getAsset().equipment_type));
+                }
+                catch (Exception error) { Report(error); }
+                finally { Mutating = false; }
+            }
             Reconcile(actor, true);
         }
 
@@ -563,7 +650,7 @@ namespace MetaRules.Game
         {
             if (!Ready || actor == null || !actor.isAlive()) return;
             // This runs only after a real rebuild, never after an early-return updateStats.
-            Evaluation effects = RuleEngine.Evaluate(Applicable(actor));
+            Evaluation effects = Effects(actor);
             foreach (var pair in effects.Stats)
                 if (AllowedStats.Contains(pair.Key)) actor.stats[pair.Key] += pair.Value;
         }
@@ -603,9 +690,8 @@ namespace MetaRules.Game
             int count = 0; violations = 0;
             if (target == null || World.world?.units == null) return 0;
             RuleSet set = Get(target);
-            foreach (Actor actor in World.world.units.getSimpleList())
+            foreach (Actor actor in Members(target))
             {
-                if (actor == null || !actor.isAlive() || Member(actor, target.Kind)?.Id != target.Id) continue;
                 count++;
                 if (set != null && !set.Allows(new ActorSubject(actor))) violations++;
             }

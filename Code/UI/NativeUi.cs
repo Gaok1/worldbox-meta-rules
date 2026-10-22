@@ -179,6 +179,7 @@ namespace MetaRules.UI
             if (native == null)
             {
                 MetaSymbols.Draw(wrapper, meta, 0, 0, size);
+                MetaSymbols.Tip(wrapper, () => meta.Name + " #" + meta.Id, () => RulesWindow.KindName(meta.Kind));
                 return wrapper;
             }
             var rt = (RectTransform)native.transform;
