@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using MetaRules.Core;
 
@@ -16,8 +17,23 @@ sealed class Subject : ISubject
         foreach (var slot in Slots.Values) if (slot.Id == id) return true;
         return false;
     }
-    public bool AddTrait(string id) => !Rejected.Contains(id) && Traits.Add(id);
+    // Opposite pairs, both ways; Fixed traits cannot be removed.
+    public readonly List<(string A, string B)> Exclusive = new List<(string, string)>();
+    public readonly HashSet<string> Fixed = new HashSet<string>();
+    bool Excludes(string a, string b) => Exclusive.Contains((a, b)) || Exclusive.Contains((b, a));
+    public bool AddTrait(string id) => !Rejected.Contains(id) && Opposites(id).Count == 0 && Traits.Add(id);
     public void RemoveTrait(string id) => Traits.Remove(id);
+    public List<string> Opposites(string id)
+    {
+        var held = new List<string>();
+        foreach (string trait in Traits)
+        {
+            if (!Excludes(id, trait)) continue;
+            if (Fixed.Contains(trait)) return null;
+            held.Add(trait);
+        }
+        return held;
+    }
     // Equipment: item id "slot:name", e.g. "weapon:sword".
     public readonly Dictionary<string, (string Item, long Id)> Slots = new Dictionary<string, (string, long)>();
     public readonly HashSet<string> Cursed = new HashSet<string>();
@@ -130,6 +146,73 @@ static class Program
             var ledger = new TraitLedger();
             RuleEngine.Reconcile(actor, Evaluate(Trait("brave")), ledger);
             Assert(actor.HasTrait("coward") && !actor.HasTrait("brave") && !ledger.Owned.ContainsKey("brave"), "conflicting grant changed existing traits");
+        });
+        Test("a declared trait replaces opposites and hands them back afterwards", () =>
+        {
+            var actor = new Subject(); actor.Traits.Add("novice");
+            actor.Exclusive.Add(("novice", "grandmaster")); actor.Exclusive.Add(("god", "grandmaster")); actor.Exclusive.Add(("novice", "god"));
+            var ledger = new TraitLedger();
+            RuleEngine.Reconcile(actor, Evaluate(Trait("grandmaster")), ledger);
+            Assert(actor.HasTrait("grandmaster") && !actor.HasTrait("novice"), "opposite was not replaced");
+            for (int i = 0; i < 5; i++) Assert(!RuleEngine.Reconcile(actor, Evaluate(Trait("grandmaster")), ledger), "replacement repeated");
+            RuleEngine.Reconcile(actor, Evaluate(), ledger);
+            Assert(actor.HasTrait("novice") && !actor.HasTrait("grandmaster") && ledger.IsEmpty(), "replaced trait not handed back");
+        });
+        Test("a served grant does not overrule a later native change", () =>
+        {
+            var actor = new Subject(); actor.Traits.Add("novice");
+            actor.Exclusive.Add(("novice", "grandmaster")); actor.Exclusive.Add(("god", "grandmaster")); actor.Exclusive.Add(("novice", "god"));
+            var ledger = new TraitLedger();
+            RuleEngine.Reconcile(actor, Evaluate(Trait("grandmaster")), ledger);
+            actor.Traits.Remove("grandmaster"); actor.Traits.Add("god"); // natural promotion
+            RuleEngine.Reconcile(actor, Evaluate(Trait("grandmaster")), ledger);
+            Assert(actor.HasTrait("god") && !actor.HasTrait("grandmaster"), "grant fought a promotion");
+            RuleEngine.Reconcile(actor, Evaluate(), ledger);
+            Assert(actor.HasTrait("god") && !actor.HasTrait("novice"), "handed back over a newer trait");
+        });
+        Test("a permanent grant keeps its replacement", () =>
+        {
+            var actor = new Subject(); actor.Traits.Add("novice"); actor.Exclusive.Add(("novice", "grandmaster"));
+            var ledger = new TraitLedger();
+            RuleEngine.Reconcile(actor, Evaluate(Trait("grandmaster", Lifetime.Permanent)), ledger);
+            RuleEngine.Reconcile(actor, Evaluate(), ledger);
+            Assert(actor.HasTrait("grandmaster") && !actor.HasTrait("novice") && ledger.IsEmpty(), "permanent replacement was undone");
+        });
+        Test("an unremovable opposite blocks the grant", () =>
+        {
+            var actor = new Subject(); actor.Traits.Add("cursed"); actor.Fixed.Add("cursed"); actor.Exclusive.Add(("cursed", "blessed"));
+            var ledger = new TraitLedger();
+            RuleEngine.Reconcile(actor, Evaluate(Trait("blessed")), ledger);
+            Assert(actor.HasTrait("cursed") && !actor.HasTrait("blessed") && ledger.IsEmpty(), "unremovable trait was replaced");
+        });
+        Test("with replacement off, a conflicting grant is skipped", () =>
+        {
+            var actor = new Subject(); actor.Traits.Add("novice"); actor.Exclusive.Add(("novice", "grandmaster"));
+            var ledger = new TraitLedger();
+            RuleEngine.Reconcile(actor, Evaluate(Trait("grandmaster")), ledger, false);
+            Assert(actor.HasTrait("novice") && !actor.HasTrait("grandmaster") && !ledger.Owned.ContainsKey("grandmaster"), "replaced while disabled");
+            RuleEngine.Reconcile(actor, Evaluate(), ledger, false);
+            Assert(actor.HasTrait("novice") && ledger.IsEmpty(), "skipped grant left state");
+        });
+        Test("conflicting declarations and requirements are detected", () =>
+        {
+            Func<string, string, bool> opposed = (a, b) => a != b && (a + b == "novicegrandmaster" || a + b == "grandmasternovice");
+            Restriction Rule(bool any, params Condition[] conditions) => new Restriction { Any = any, Conditions = new List<Condition>(conditions) };
+            Condition Has(string trait, bool negated = false) => new Condition { Trait = trait, Negated = negated };
+            Condition City() => new Condition { Kind = ConditionKind.Membership, Meta = MetaKind.City, MetaId = 3 };
+            int Count(RuleSet set) => RuleEngine.Clashes(set, opposed).Count();
+
+            Assert(Count(new RuleSet { Declarations = { Trait("novice"), Trait("grandmaster") } }) == 1, "opposite declarations");
+            Assert(Count(new RuleSet { Declarations = { Trait("novice"), Trait("brave") } }) == 0, "unrelated declarations");
+            Assert(Count(new RuleSet { Restrictions = { Rule(false, Has("novice"), Has("grandmaster")) } }) == 1, "ALL needs opposites");
+            Assert(Count(new RuleSet { Restrictions = { Rule(true, Has("novice"), Has("grandmaster")) } }) == 0, "ANY of opposites is fine");
+            Assert(Count(new RuleSet { Restrictions = { Rule(false, Has("brave"), Has("brave", true)) } }) == 1, "trait and its negation");
+            Assert(Count(new RuleSet { Restrictions = { Rule(false, Has("novice", true), Has("grandmaster", true)) } }) == 0, "negated opposites are fine");
+            var breaks = RuleEngine.Clashes(new RuleSet { Declarations = { Trait("grandmaster") }, Restrictions = { Rule(false, Has("novice")) } }, opposed).Single();
+            Assert(breaks.Declared && breaks.Rule != null && breaks.A == "grandmaster" && breaks.B == "novice", "declaration breaking its requirement");
+            Assert(Count(new RuleSet { Declarations = { Trait("brave") }, Restrictions = { Rule(false, Has("brave", true)) } }) == 1, "declaring a forbidden trait");
+            Assert(Count(new RuleSet { Declarations = { Trait("grandmaster") }, Restrictions = { Rule(true, Has("novice"), City()) } }) == 0, "ANY keeps another way in");
+            Assert(Count(new RuleSet { Declarations = { Trait("grandmaster") }, Restrictions = { Rule(true, Has("novice")) } }) == 1, "ANY with every way broken");
         });
         Test("repeated reconciliation is idempotent", () =>
         {
@@ -459,6 +542,60 @@ static class Program
             Assert(!RuleEngine.Valid(new RuleSet { Declarations = new List<Declaration> {
                 new Declaration { Kind = EffectKind.Meta, Meta = MetaKind.Equipment, MetaId = id } } }), "invalid equipment membership grant accepted");
             Assert((int)MetaKind.Subspecies == 8 && (int)MetaKind.Equipment == 9, "existing save enum IDs changed");
+        });
+        Test("a worn item's trait overrides a conflicting group trait only while worn", () =>
+        {
+            // Another mod's fighting schools: learning one removes the other.
+            var actor = new Subject(); actor.Exclusive.Add(("iron_fist", "blades")); var ledger = new TraitLedger();
+            Func<string, string, bool> opposed = (a, b) => actor.Exclusive.Contains((a, b)) || actor.Exclusive.Contains((b, a));
+            var species = new RuleSet { Declarations = new List<Declaration> { Trait("iron_fist"), Trait("strong") } };
+            var sword = new RuleSet { Declarations = new List<Declaration> { Trait("blades") } };
+            RuleEngine.Reconcile(actor, RuleEngine.Evaluate(actor, new[] { species }, new RuleSet[0], opposed), ledger);
+            Assert(actor.HasTrait("iron_fist"), "group trait missing");
+            for (int i = 0; i < 3; i++)
+            {
+                Evaluation worn = RuleEngine.Evaluate(actor, new[] { species }, new[] { sword }, opposed);
+                Assert(worn.Overridden["iron_fist"] == "blades" && !worn.Temporary.Contains("iron_fist"), "item did not take precedence");
+                RuleEngine.Reconcile(actor, worn, ledger);
+                Assert(actor.HasTrait("blades") && !actor.HasTrait("iron_fist") && actor.HasTrait("strong"), "conflicting grants alternated on scan " + i);
+            }
+            RuleEngine.Reconcile(actor, RuleEngine.Evaluate(actor, new[] { species }, new RuleSet[0], opposed), ledger);
+            Assert(actor.HasTrait("iron_fist") && !actor.HasTrait("blades"), "group trait did not return after unequip");
+        });
+        Test("conflicting group grants settle on the first group instead of alternating", () =>
+        {
+            var actor = new Subject(); actor.Exclusive.Add(("calm", "angry")); var ledger = new TraitLedger();
+            Func<string, string, bool> opposed = (a, b) => actor.Exclusive.Contains((a, b)) || actor.Exclusive.Contains((b, a));
+            var first = new RuleSet { Declarations = new List<Declaration> { Trait("calm") } };
+            var second = new RuleSet { Declarations = new List<Declaration> { Trait("angry", Lifetime.Permanent) } };
+            for (int i = 0; i < 3; i++)
+            {
+                RuleEngine.Reconcile(actor, RuleEngine.Evaluate(actor, new[] { first, second }, new RuleSet[0], opposed), ledger);
+                Assert(actor.HasTrait("calm") && !actor.HasTrait("angry"), "group precedence lost on scan " + i);
+            }
+            Assert(RuleEngine.Evaluate(actor, new[] { first, second }, new RuleSet[0]).Permanent.Contains("angry"), "unsettled evaluation changed");
+        });
+        Test("handing over an item checks the wearer's groups against the traits it settles on", () =>
+        {
+            var actor = new Subject(); actor.Exclusive.Add(("iron_fist", "blades")); var ledger = new TraitLedger();
+            Func<string, string, bool> opposed = (a, b) => actor.Exclusive.Contains((a, b)) || actor.Exclusive.Contains((b, a));
+            var species = new RuleSet { Declarations = new List<Declaration> { Trait("iron_fist") } };
+            RuleEngine.Reconcile(actor, RuleEngine.Evaluate(actor, new[] { species }, new RuleSet[0], opposed), ledger);
+            var sword = new RuleSet { Declarations = new List<Declaration> { Trait("blades") } };
+            var handover = new Dictionary<MetaKind, long> { { MetaKind.Equipment, 7 } };
+            Func<string, bool?> settled = RuleEngine.Settled(RuleEngine.Evaluate(actor, new[] { species }, new[] { sword }, opposed), ledger, opposed);
+            RuleSet Requires(Condition c) => new RuleSet { Restrictions = new List<Restriction> { new Restriction { Conditions = new List<Condition> { c } } } };
+            var monastery = Requires(new Condition { Trait = "iron_fist" });
+            Assert(RuleEngine.CanMove(actor, handover, new[] { sword }, new[] { monastery }), "unsettled check should not see the override");
+            Assert(!RuleEngine.CanMove(actor, handover, new[] { sword }, new[] { monastery }, settled), "handover broke a kept requirement");
+            Assert(RuleEngine.CanMove(actor, handover, new[] { sword }, new[] { species }, settled), "handover without a broken requirement refused");
+            var swordsmen = Requires(new Condition { Trait = "blades" });
+            Assert(RuleEngine.CanMove(actor, handover, new[] { sword }, new[] { swordsmen }, settled), "granted trait not counted for kept groups");
+            Assert(!RuleEngine.CanMove(actor, handover, new[] { swordsmen }, new RuleSet[0], settled), "item admitted on its own grant");
+            var bearers = Requires(new Condition { Kind = ConditionKind.Membership, Meta = MetaKind.Equipment, MetaId = 7 });
+            Assert(RuleEngine.CanMove(actor, handover, new RuleSet[0], new[] { bearers }), "handed item not counted as worn");
+            actor.Traits.Add("native"); actor.Exclusive.Add(("native", "blades"));
+            Assert(settled("native") == false && settled("unrelated") == null, "projection of replaced or untouched traits wrong");
         });
         Console.WriteLine(passed + " behavioral tests passed.");
     }

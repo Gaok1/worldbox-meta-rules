@@ -1,8 +1,8 @@
 {
   "name": "Meta Rules",
   "author": "Gaok1",
-  "version": "0.6.0",
-  "description": "Set requirements and grant traits, equipment, stats or meta memberships for individual groups and equipment items. Manage members and restrict who may use each item.",
+  "version": "0.8.0",
+  "description": "Set requirements and grant traits, equipment, stats or meta memberships for individual groups and equipment items. Manage members, restrict who may use or hand over each item and create empty groups as rule targets.",
   "GUID": "gaok1.meta_rules",
   "iconPath": "icon.png",
   "RepoUrl": "https://github.com/Gaok1/worldbox-meta-rules",

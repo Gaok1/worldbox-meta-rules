@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
+
+- Traits that remove one another on addition (`traits_to_remove`: another tier, school or desire of the same kind) count as conflicting, in the editor and when granting. Previously such grants silently removed each other and, when two sources declared them, alternated on every scan.
+- Conflicting declared traits from several sources settle instead of alternating: a worn item's trait overrides its wearer's groups while worn (e.g. a sword teaching a sword school over the bare-handed school a species teaches); otherwise the first group wins. The overridden trait returns when the item leaves. Adding a wearer reports which group traits the item overrides.
+- Add wearer and membership grants check the creature's kept groups against the traits it would hold once the new item's or group's grants settle. A handover that would replace or override a trait one of its groups requires is refused, naming that group.
+- Declared traits replace held opposites, like the native trait editor (e.g. another mod's tier ladder: a Novice wielding a sword that grants Grandmaster now becomes Grandmaster). A temporary grant hands the replaced traits back when it ends, unless something newer took their place; a later change by the game or another mod is never overruled. Unremovable opposites still block the grant. A new **Replace conflicting traits** setting (on by default) turns this off.
+- The editor refuses conflicting traits: opposite declarations, a requirement needing opposites or a trait and its negation at once, and a declaration that breaks the rule's own requirement. Conflicting traits are faded in the picker and explained on click; saving is blocked with the reason.
+- Add wearer: hand any item to a chosen creature from its rules window. The item leaves its current wearer or city storage, and the new wearer's previous item goes to their city. Requirements, removals, cursed items and species equipment limits are respected.
+
+## 0.7.0
 
 - Create empty native languages, cultures, religions and clans directly from declaration pickers; requirement pickers also offer families and subspecies. An army can be created for a city without one, respecting the native one-army limit. Nobody is assigned during creation.
 - Open the game's own meta window to edit names, banners, colors and available traits. Return to rule or use native Back to continue the existing draft with the new meta selected. Creation entries stay available during search, including when no metas exist yet.

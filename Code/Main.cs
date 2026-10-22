@@ -9,12 +9,15 @@ namespace MetaRules
 {
     public class Main : BasicMod<Main>
     {
-        ModConfigItem overrideCulturalBlock;
+        ModConfigItem overrideCulturalBlock, replaceOpposedTraits;
         public static bool OverrideCulturalBlock => Instance?.overrideCulturalBlock?.BoolVal == true;
+        // Without a loaded setting, keep the default (on).
+        public static bool ReplaceOpposedTraits => Instance?.replaceOpposedTraits?.BoolVal != false;
 
         protected override void OnModLoad()
         {
             overrideCulturalBlock = GetConfig()["mr_settings"]["mr_override_cultural_block"];
+            replaceOpposedTraits = GetConfig()["mr_settings"]["mr_replace_opposed_traits"];
             new Harmony("gaok1.meta_rules").PatchAll(typeof(Main).Assembly);
             gameObject.AddComponent<RuleLoop>();
             RulesWindow.Init();

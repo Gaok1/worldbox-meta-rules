@@ -32,6 +32,9 @@ option = config["mr_settings"][0]
 assert option["Id"] == "mr_override_cultural_block" and option["Type"] == "SWITCH"
 assert option["BoolVal"] is False, "Existing behavior must remain the default"
 assert "mr_settings" in en and option["Id"] in en and option["Id"] + " Description" in en
+replace = config["mr_settings"][1]
+assert replace["Id"] == "mr_replace_opposed_traits" and replace["Type"] == "SWITCH" and replace["BoolVal"] is True
+assert replace["Id"] in en and replace["Id"] + " Description" in en
 assert '"default_config.json"' in (ROOT / "tools/package.py").read_text(), "Package must include settings"
 assert all(isinstance(value, str) and value.strip() for value in [*en.values(), *br.values()])
 keys = set()

@@ -89,6 +89,8 @@ namespace MetaRules.Core
         bool HasEquipment(long id);
         bool AddTrait(string id);
         void RemoveTrait(string id);
+        // Held traits that exclude this one; null when one of them cannot be removed.
+        List<string> Opposites(string id);
         // Equipment: null slot means this subject cannot carry the item.
         string SlotOf(string item);
         long Equipped(string slot, out string item);
@@ -97,12 +99,14 @@ namespace MetaRules.Core
     }
 
     // Per-actor save data. Owned=false means this trait also has a non-mod source.
+    // Served: declared traits already handed out, with the opposites they replaced.
     [Serializable]
     public sealed class TraitLedger
     {
         public Dictionary<string, bool> Owned = new Dictionary<string, bool>();
         public Dictionary<string, ItemGrant> Items = new Dictionary<string, ItemGrant>();
-        public bool IsEmpty() => Owned.Count == 0 && (Items == null || Items.Count == 0);
+        public Dictionary<string, List<string>> Served = new Dictionary<string, List<string>>();
+        public bool IsEmpty() => Owned.Count == 0 && (Items == null || Items.Count == 0) && (Served == null || Served.Count == 0);
     }
 
     // One equipment declaration served during the current membership. Id=-1 means the
@@ -115,6 +119,16 @@ namespace MetaRules.Core
         public bool Permanent;
     }
 
+    // Rule: the requirement involved, if any. Declared: A is a declared trait (and so is B
+    // when there is no Rule); otherwise A and B are conditions of Rule.
+    public sealed class TraitClash
+    {
+        public string A, B;
+        public bool ANegated, BNegated, Declared;
+        public Restriction Rule;
+        public bool Involves(string trait) => A == trait || B == trait;
+    }
+
     public sealed class Evaluation
     {
         public readonly HashSet<string> Temporary = new HashSet<string>(StringComparer.Ordinal);
@@ -124,6 +138,8 @@ namespace MetaRules.Core
         public readonly List<KeyValuePair<string, bool>> Items = new List<KeyValuePair<string, bool>>();
         // One granted group per meta type; the first group to declare one wins.
         public readonly Dictionary<MetaKind, long> Metas = new Dictionary<MetaKind, long>();
+        // Declared traits left out because a conflicting one wins, with the winner.
+        public readonly Dictionary<string, string> Overridden = new Dictionary<string, string>(StringComparer.Ordinal);
         public bool Empty => Temporary.Count == 0 && Permanent.Count == 0 && Stats.Count == 0 && Items.Count == 0 && Metas.Count == 0;
     }
 
@@ -140,25 +156,44 @@ namespace MetaRules.Core
             CanMove(subject, new Dictionary<MetaKind, long> { { kind, id } }, new[] { target }, kept);
 
         // Some moves change several memberships at once (a new city also means its kingdom,
-        // and leaving the old army). Id -1 means leaving that type.
-        public static bool CanMove(ISubject subject, IDictionary<MetaKind, long> changes, IEnumerable<RuleSet> targets, IEnumerable<RuleSet> kept)
+        // and leaving the old army). Id -1 means leaving that type; an Equipment change is
+        // the item handed over. Targets admit the subject as it is now; kept groups must
+        // still accept it once the move's trait grants settle ('traits', see Settled).
+        public static bool CanMove(ISubject subject, IDictionary<MetaKind, long> changes, IEnumerable<RuleSet> targets, IEnumerable<RuleSet> kept,
+            Func<string, bool?> traits = null)
         {
-            var moved = new Moved(subject, changes);
+            var moved = new Moved(subject, changes, null);
             foreach (RuleSet set in targets) if (set != null && !set.Allows(moved)) return false;
-            foreach (RuleSet set in kept) if (set != null && !set.Allows(moved)) return false;
+            var settled = traits == null ? moved : new Moved(subject, changes, traits);
+            foreach (RuleSet set in kept) if (set != null && !set.Allows(settled)) return false;
             return true;
         }
 
+        // The traits a subject would hold once 'after' is reconciled: declared traits arrive
+        // and replace their opposites, and the mod's own grants that are no longer declared
+        // leave. Null means the trait does not change.
+        public static Func<string, bool?> Settled(Evaluation after, TraitLedger ledger, Func<string, string, bool> opposed) => trait =>
+        {
+            if (after.Temporary.Contains(trait) || after.Permanent.Contains(trait)) return true;
+            if (ledger?.Owned != null && ledger.Owned.TryGetValue(trait, out bool owned) && owned) return false;
+            foreach (string granted in after.Permanent) if (opposed(granted, trait)) return false;
+            foreach (string granted in after.Temporary) if (opposed(granted, trait)) return false;
+            return null;
+        };
+
         sealed class Moved : ISubject
         {
-            readonly ISubject inner; readonly IDictionary<MetaKind, long> changes;
-            public Moved(ISubject subject, IDictionary<MetaKind, long> changes) { inner = subject; this.changes = changes; }
+            readonly ISubject inner; readonly IDictionary<MetaKind, long> changes; readonly Func<string, bool?> traits;
+            public Moved(ISubject subject, IDictionary<MetaKind, long> changes, Func<string, bool?> traits)
+            { inner = subject; this.changes = changes; this.traits = traits; }
             public long Id => inner.Id;
             public long MemberOf(MetaKind value) => changes.TryGetValue(value, out long id) ? id : inner.MemberOf(value);
-            public bool HasTrait(string trait) => inner.HasTrait(trait);
-            public bool HasEquipment(long id) => inner.HasEquipment(id);
+            public bool HasTrait(string trait) => traits?.Invoke(trait) ?? inner.HasTrait(trait);
+            public bool HasEquipment(long id) =>
+                changes.TryGetValue(MetaKind.Equipment, out long given) && given == id || inner.HasEquipment(id);
             public bool AddTrait(string trait) => false;
             public void RemoveTrait(string trait) { }
+            public List<string> Opposites(string trait) => null;
             public string SlotOf(string item) => null;
             public long Equipped(string slot, out string item) { item = null; return -1; }
             public long Equip(string item) => -1;
@@ -190,15 +225,52 @@ namespace MetaRules.Core
 
         // Evaluate a membership snapshot before applying effects: ordering of groups cannot
         // make a declaration qualify its own admission or recursively grant memberships.
-        public static Evaluation Evaluate(ISubject subject, IEnumerable<RuleSet> memberships, IEnumerable<RuleSet> equipment) =>
-            Evaluate(Sources(subject, memberships, equipment));
-
-        static IEnumerable<RuleSet> Sources(ISubject subject, IEnumerable<RuleSet> memberships, IEnumerable<RuleSet> equipment)
+        // 'opposed' settles conflicting declared traits (see Settle); without it every
+        // declared trait is desired.
+        public static Evaluation Evaluate(ISubject subject, IEnumerable<RuleSet> memberships, IEnumerable<RuleSet> equipment,
+            Func<string, string, bool> opposed = null)
         {
             // Existing groups keep their precedence. Every equipped item is a separate
             // source, and an ineligible item cannot grant its own admission requirements.
-            foreach (RuleSet set in memberships) yield return set;
-            foreach (RuleSet set in equipment) if (set.Allows(subject)) yield return set;
+            var groups = new List<RuleSet>();
+            foreach (RuleSet set in memberships) if (set != null) groups.Add(set);
+            var worn = new List<RuleSet>();
+            foreach (RuleSet set in equipment) if (set != null && set.Allows(subject)) worn.Add(set);
+            var all = new List<RuleSet>(groups);
+            all.AddRange(worn);
+            Evaluation result = Evaluate(all);
+            if (opposed != null)
+            {
+                worn.AddRange(groups);
+                Settle(result, worn, opposed);
+            }
+            return result;
+        }
+
+        // Conflicting traits cannot be held together, and granting both would make them
+        // replace each other on every scan. What a creature wears is its most specific
+        // source, so an item's trait overrides its groups' (a sword's school over the one its
+        // species teaches) only while it is worn; otherwise the first declaration wins.
+        static void Settle(Evaluation result, List<RuleSet> ordered, Func<string, string, bool> opposed)
+        {
+            var kept = new List<string>();
+            foreach (RuleSet set in ordered)
+            {
+                if (!set.Enabled) continue;
+                foreach (Declaration d in set.Declarations)
+                {
+                    if (!d.Enabled || d.Kind != EffectKind.Trait || string.IsNullOrWhiteSpace(d.Value) || kept.Contains(d.Value)) continue;
+                    string winner = kept.Find(k => opposed(k, d.Value));
+                    if (winner == null)
+                    {
+                        kept.Add(d.Value);
+                        continue;
+                    }
+                    result.Temporary.Remove(d.Value);
+                    result.Permanent.Remove(d.Value);
+                    result.Overridden[d.Value] = winner;
+                }
+            }
         }
 
         public static Evaluation Evaluate(IEnumerable<RuleSet> sets)
@@ -237,14 +309,53 @@ namespace MetaRules.Core
             return result;
         }
 
-        public static bool Reconcile(ISubject subject, Evaluation desired, TraitLedger ledger)
+        // Trait choices a rule set can never satisfy: declaring opposites, a requirement that
+        // needs opposites (or a trait and its negation) at once, or declaring a trait that
+        // breaks the set's own requirement. Disabled entries count, since they can be enabled.
+        public static IEnumerable<TraitClash> Clashes(RuleSet set, Func<string, string, bool> opposed)
         {
+            var declared = new List<string>();
+            foreach (Declaration d in set.Declarations)
+                if (d.Kind == EffectKind.Trait && !string.IsNullOrEmpty(d.Value)) declared.Add(d.Value);
+            for (int i = 0; i < declared.Count; i++)
+                for (int j = i + 1; j < declared.Count; j++)
+                    if (opposed(declared[i], declared[j])) yield return new TraitClash { A = declared[i], B = declared[j], Declared = true };
+            foreach (Restriction rule in set.Restrictions)
+            {
+                var traits = rule.Conditions.FindAll(c => c.Kind == ConditionKind.Trait && !string.IsNullOrEmpty(c.Trait));
+                if (!rule.Any)
+                    for (int i = 0; i < traits.Count; i++)
+                        for (int j = i + 1; j < traits.Count; j++)
+                        {
+                            Condition a = traits[i], b = traits[j];
+                            if (a.Negated != b.Negated ? a.Trait == b.Trait : !a.Negated && opposed(a.Trait, b.Trait))
+                                yield return new TraitClash { A = a.Trait, ANegated = a.Negated, B = b.Trait, BNegated = b.Negated, Rule = rule };
+                        }
+                foreach (string trait in declared)
+                {
+                    // ALL fails when one condition breaks; ANY only when every one does.
+                    Condition broken = null;
+                    int count = 0;
+                    foreach (Condition c in traits)
+                        if (c.Negated ? c.Trait == trait : opposed(c.Trait, trait)) { broken = broken ?? c; count++; }
+                    if (broken != null && (!rule.Any || count == rule.Conditions.Count))
+                        yield return new TraitClash { A = trait, B = broken.Trait, BNegated = broken.Negated, Rule = rule, Declared = true };
+                }
+            }
+        }
+
+        public static bool Reconcile(ISubject subject, Evaluation desired, TraitLedger ledger, bool replaceOpposites = true)
+        {
+            if (ledger.Served == null) ledger.Served = new Dictionary<string, List<string>>();
             bool changed = false;
-            // A permanent declaration promotes an existing temporary grant to a lasting one.
+            // A permanent declaration promotes an existing temporary grant to a lasting one,
+            // and whatever it replaced is gone for good.
             foreach (string trait in desired.Permanent)
             {
-                if (!subject.HasTrait(trait)) changed |= subject.AddTrait(trait);
+                if (!subject.HasTrait(trait)) changed |= Grant(subject, trait, ledger, replaceOpposites);
                 ledger.Owned.Remove(trait);
+                if (ledger.Served.TryGetValue(trait, out List<string> replaced)) replaced.Clear();
+                else if (subject.HasTrait(trait)) ledger.Served[trait] = new List<string>();
             }
             foreach (string trait in new List<string>(ledger.Owned.Keys))
             {
@@ -260,13 +371,40 @@ namespace MetaRules.Core
             {
                 if (desired.Permanent.Contains(trait)) continue;
                 if (!ledger.Owned.ContainsKey(trait) && subject.HasTrait(trait)) ledger.Owned[trait] = false;
-                if (!subject.HasTrait(trait) && subject.AddTrait(trait))
+                if (!subject.HasTrait(trait) && Grant(subject, trait, ledger, replaceOpposites))
                 {
                     ledger.Owned[trait] = true;
                     changed = true;
                 }
+                if (subject.HasTrait(trait) && !ledger.Served.ContainsKey(trait)) ledger.Served[trait] = new List<string>();
+            }
+            // A temporary grant hands back what it replaced, unless something else took the place.
+            foreach (string trait in new List<string>(ledger.Served.Keys))
+            {
+                if (desired.Temporary.Contains(trait) || desired.Permanent.Contains(trait)) continue;
+                foreach (string old in ledger.Served[trait])
+                    if (!subject.HasTrait(old) && subject.AddTrait(old)) changed = true;
+                ledger.Served.Remove(trait);
             }
             return ReconcileItems(subject, desired, ledger) | changed;
+        }
+
+        // Like the game's trait editor, a declared trait replaces held opposites (another tier
+        // of the same ladder, for instance). Only the first time: once served, a later change
+        // made by the game or another mod is not overruled.
+        static bool Grant(ISubject subject, string trait, TraitLedger ledger, bool replaceOpposites)
+        {
+            if (!replaceOpposites || ledger.Served.ContainsKey(trait)) return subject.AddTrait(trait);
+            List<string> held = subject.Opposites(trait);
+            if (held == null) return false;
+            foreach (string old in held) subject.RemoveTrait(old);
+            if (!subject.AddTrait(trait))
+            {
+                foreach (string old in held) subject.AddTrait(old);
+                return false;
+            }
+            ledger.Served[trait] = held;
+            return true;
         }
 
         // Equipment is served once per membership. Later replacements (city upgrades,

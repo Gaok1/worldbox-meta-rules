@@ -36,6 +36,7 @@ namespace MetaRules.UI
         static bool onlyEligible;
         static bool IsEquipment => selected?.Kind == MetaKind.Equipment;
         static string People => T(IsEquipment ? "wearers" : "members");
+        static string AddPeople => IsEquipment ? "add_wearer" : "add_members";
         static bool confirmEmpty;
         static int category;
         static string query = "";
@@ -291,7 +292,7 @@ namespace MetaRules.UI
         {
             RuleSet set = Current;
             if (IsEquipment) HelpBlock(T("equipment_intro"));
-            else Label(Block(22, "add_members"), "+  " + T("add_members"), 0, 0, CW, 22,
+            Label(Block(22, "add_members"), "+  " + T(AddPeople), 0, 0, CW, 22,
                 () => { ResetEditor(); members = true; addingMembers = true; Build(); });
             NativeUi.Group declarations = Section(T("declarations"), set.Declarations.Count);
             foreach (Declaration value in set.Declarations)
@@ -398,6 +399,19 @@ namespace MetaRules.UI
             Id = r.Id, Enabled = r.Enabled, Any = r.Any,
             Conditions = r.Conditions.Select(c => new Condition { Kind = c.Kind, Trait = c.Trait, Meta = c.Meta, MetaId = c.MetaId, Negated = c.Negated }).ToList()
         };
+        // The rule set as it would be after saving the declaration or requirement being edited.
+        static RuleSet With(Declaration d) => new RuleSet
+        { Restrictions = Current.Restrictions, Declarations = Current.Declarations.Where(x => x.Id != d.Id).Concat(new[] { d }).ToList() };
+        static RuleSet With(Restriction r) => new RuleSet
+        { Declarations = Current.Declarations, Restrictions = Current.Restrictions.Where(x => x.Id != r.Id).Concat(new[] { r }).ToList() };
+
+        // Only clashes the edited entry takes part in: an older one elsewhere does not block it.
+        static TraitClash ClashOf(Declaration d) => d.Kind != EffectKind.Trait ? null :
+            RuleEngine.Clashes(With(d), WorldRules.Opposed).FirstOrDefault(c => c.Declared && (c.A == d.Value || c.Rule == null && c.B == d.Value));
+        static TraitClash ClashOf(Restriction r) => RuleEngine.Clashes(With(r), WorldRules.Opposed).FirstOrDefault(c => c.Rule == r);
+        static string ClashText(TraitClash c) => string.Format(T(c.Rule != null && c.Declared ? "clash_requirement" : "clash"),
+            (c.ANegated ? T("not") + " " : "") + TraitName(c.A), (c.BNegated ? T("not") + " " : "") + TraitName(c.B));
+
         static MetaHandle Referenced(Condition c) => WorldRules.Metas.FirstOrDefault(m => m.Kind == c.Meta && m.Id == c.MetaId);
         static string Describe(Condition c) => (c.Negated ? T("not") + " " : "") +
             (c.Kind == ConditionKind.Trait ? TraitName(c.Trait) : KindName(c.Meta) + ": " + (Referenced(c)?.Name ?? T("missing_meta")));
@@ -430,6 +444,7 @@ namespace MetaRules.UI
         {
             bool exists = Current.Declarations.Any(d => d.Id == effect.Id);
             bool grant = effect.Kind == EffectKind.Meta;
+            TraitClash clash = ClashOf(effect);
             float statusY = grant ? 66 : 88;
             float footerY = grant ? 116 : statusY + 32;
             RectTransform block = Block(grant ? 140 : 144, "declaration");
@@ -480,7 +495,7 @@ namespace MetaRules.UI
             Segment(block, x, statusY, w, new[] { T("enabled"), T("disabled") }, effect.Enabled ? 0 : 1, i => effect.Enabled = i == 0);
             Footer(block, footerY, () =>
             {
-                if (!Chosen(effect)) return;
+                if (!Chosen(effect) || clash != null) return;
                 RuleSet set = Current;
                 int index = set.Declarations.FindIndex(d => d.Id == effect.Id);
                 if (index < 0) set.Declarations.Add(effect); else set.Declarations[index] = effect;
@@ -488,6 +503,7 @@ namespace MetaRules.UI
             }, () => { effect = null; Build(); }, exists ? (Action)(() =>
             { RuleSet set = Current; set.Declarations.RemoveAll(d => d.Id == effect.Id); effect = null; Save(set); }) : null);
 
+            if (clash != null) HelpBlock(ClashText(clash)).color = Bad;
             string helpText = effect.Kind == EffectKind.Trait ? "trait_help" : effect.Kind == EffectKind.Item ? "item_help" : grant ? "meta_help" : "stat_help";
             if (IsEquipment) HelpBlock(T("equipment_rules_help"));
             HelpBlock(T(helpText));
@@ -530,6 +546,8 @@ namespace MetaRules.UI
             }
             else Hint(T(draft.Conditions.Count == 0 ? IsEquipment ? "first_equipment_condition" : "first_condition" : "select_condition"));
 
+            TraitClash clash = ClashOf(draft);
+            if (clash != null) HelpBlock(ClashText(clash)).color = Bad;
             bool emptiesGroup = false;
             if (draft.Conditions.Count > 0)
             {
@@ -548,7 +566,7 @@ namespace MetaRules.UI
 
             Footer(Block(20, "footer"), 0, () =>
             {
-                if (draft.Conditions.Count == 0) return;
+                if (draft.Conditions.Count == 0 || clash != null) return;
                 if (emptiesGroup && !confirmEmpty) { confirmEmpty = true; Build(true); return; }
                 RuleSet set = Current;
                 int index = set.Restrictions.FindIndex(r => r.Id == draft.Id);
@@ -574,13 +592,14 @@ namespace MetaRules.UI
         }
 
         // A wrapped paragraph whose block grows to fit its text.
-        static void HelpBlock(string text)
+        static Text HelpBlock(string text)
         {
             RectTransform block = Block(10, "paragraph");
             Text label = Paragraph(block, text, 2, 0, CW - 4, 10, 7, TextAnchor.UpperLeft);
             float height = Mathf.Ceil(label.preferredHeight) + 2;
             block.sizeDelta = new Vector2(CW, height);
             ((RectTransform)label.transform).sizeDelta = new Vector2(CW - 4, height);
+            return label;
         }
 
         static RectTransform Hint(string text)
@@ -593,7 +612,7 @@ namespace MetaRules.UI
         // ── Picker: native groups, native order, one continuous scroll.
         static void StartPicker(bool forCondition)
         {
-            picking = true; pickingCondition = forCondition; category = 0; query = "";
+            picking = true; pickingCondition = forCondition; category = 0; query = ""; creationFeedback = "";
             Build();
         }
 
@@ -743,21 +762,41 @@ namespace MetaRules.UI
                 Group group = entry.group_id != null && byId.TryGetValue(entry.group_id, out Group known) ? known : other;
                 string name = TraitName(entry.id);
                 bool marked = used.Contains(entry.id);
-                Action select = () =>
+                TraitClash clash = PickClash(entry.id);
+                Action select = clash != null ? () => { creationFeedback = ClashText(clash); Build(); } : (Action)(() =>
                 {
                     if (pickingCondition) { draft.Conditions.Add(new Condition { Trait = entry.id }); selectedCondition = -1; }
                     else SetEffect(EffectKind.Trait, entry.id);
                     picking = false; Build();
-                };
+                });
                 group.Items.Add(new Choice
                 {
                     Search = name + " " + entry.id,
-                    Create = grid => NativeUi.TraitButton(grid, entry, marked, select)
-                        ?? Marked(Symbol(grid, 0, 0, Cell, entry.getSprite(), null, select, name, group.Title), marked)
+                    Create = grid =>
+                    {
+                        RectTransform token = NativeUi.TraitButton(grid, entry, marked, select)
+                            ?? Marked(Symbol(grid, 0, 0, Cell, entry.getSprite(), null, select, name, group.Title), marked);
+                        if (clash != null) Fade(token);
+                        return token;
+                    }
                 });
             }
             groups.Add(other);
             return groups;
+        }
+
+        // What choosing this trait in the picker would clash with.
+        static TraitClash PickClash(string trait)
+        {
+            if (pickingCondition)
+            {
+                Restriction next = Clone(draft);
+                next.Conditions.Add(new Condition { Trait = trait });
+                return RuleEngine.Clashes(With(next), WorldRules.Opposed).FirstOrDefault(c => c.Rule == next && c.Involves(trait));
+            }
+            Declaration choice = effect != null ? Clone(effect) : new Declaration();
+            choice.Kind = EffectKind.Trait; choice.Value = trait;
+            return ClashOf(choice);
         }
 
         // Same order as the native equipment editor: by item group, then library order.
@@ -1001,15 +1040,15 @@ namespace MetaRules.UI
 
         static void BuildMembers()
         {
-            RectTransform head = Block(IsEquipment ? 42 : addingMembers ? 86 : 64, "members");
+            RectTransform head = Block(addingMembers ? 86 : 64, "members");
             EditorHeader(head, People, () => { members = false; Build(); });
-            if (!IsEquipment) Segment(head, 0, 22, CW, new[] { T("members"), T("add_members") }, addingMembers ? 1 : 0,
+            Segment(head, 0, 22, CW, new[] { People, T(AddPeople) }, addingMembers ? 1 : 0,
                 i => { addingMembers = i == 1; memberQuery = ""; memberFeedback = ""; });
             if (addingMembers) Segment(head, 0, 44, CW, new[] { T("all_candidates"), T("eligible_candidates") }, onlyEligible ? 1 : 0,
                 i => onlyEligible = i == 1);
-            Input(head, memberQuery, T("search_name_id"), 0, IsEquipment ? 22 : addingMembers ? 66 : 44, CW, 17, value => { memberQuery = value; FillMembers(); });
+            Input(head, memberQuery, T("search_name_id"), 0, addingMembers ? 66 : 44, CW, 17, value => { memberQuery = value; FillMembers(); });
             if (!string.IsNullOrEmpty(memberFeedback)) HelpBlock(memberFeedback);
-            memberList = NativeUi.CreateGroup(content, addingMembers ? T("add_members") : People, HeaderGold);
+            memberList = NativeUi.CreateGroup(content, addingMembers ? T(AddPeople) : People, HeaderGold);
             NativeUi.MakeList(memberList, 2f);
             FillMembers();
 
@@ -1057,14 +1096,14 @@ namespace MetaRules.UI
                     bool allowed = WorldRules.CanAdd(selected, actor);
                     RectTransform add = Label(row, T("add"), rowW - 62, 2, 60, 18, () =>
                     {
-                        memberFeedback = WorldRules.TryAdd(selected, actor) ? string.Format(T("member_added_named"), actor.getName()) : T(WorldRules.AdditionProblem(selected, actor));
+                        memberFeedback = WorldRules.TryAdd(selected, actor) ? Added(actor) : AdditionProblem(actor);
                         Build();
                     });
                     add.GetComponent<UnityEngine.UI.Button>().interactable = allowed;
                     if (!allowed)
                     {
                         Fade(add);
-                        MetaSymbols.Tip(add, () => actor.getName() + " #" + actor.id, () => T(WorldRules.AdditionProblem(selected, actor)));
+                        MetaSymbols.Tip(add, () => actor.getName() + " #" + actor.id, () => AdditionProblem(actor));
                     }
                 }
                 else Label(row, T(IsEquipment ? "unequip" : "remove"), rowW - 62, 2, 60, 18, () => { WorldRules.Remove(selected, actor); Build(); }, Red);
@@ -1074,6 +1113,22 @@ namespace MetaRules.UI
             else if (matching.Count == 0)
                 Text(Box(memberList.Grid, 0, 0, rowW, 16, "none"), T("no_results"), 0, 0, rowW, 16, 6, Muted, TextAnchor.MiddleCenter);
             LayoutRebuilder.ForceRebuildLayoutImmediate(content);
+        }
+
+        static string AdditionProblem(Actor actor)
+        {
+            string key = WorldRules.AdditionProblem(selected, actor, out string blocker);
+            return blocker == null ? T(key) : string.Format(T(key), blocker);
+        }
+
+        // A new wearer is told which of its groups' traits the item now overrides.
+        static string Added(Actor actor)
+        {
+            if (!IsEquipment) return string.Format(T("member_added_named"), actor.getName());
+            string text = string.Format(T("wearer_added_named"), actor.getName());
+            var overrides = WorldRules.Overrides(selected, actor);
+            if (overrides.Count == 0) return text;
+            return text + " " + string.Format(T("wearer_overrides"), string.Join(", ", overrides.Select(p => TraitName(p.Value) + " > " + TraitName(p.Key))));
         }
 
         static void Avatar(RectTransform row, Actor actor)

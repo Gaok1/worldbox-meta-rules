@@ -5,6 +5,12 @@
       "Type": "SWITCH",
       "IconPath": "ui/Icons/iconCulture",
       "BoolVal": false
+    },
+    {
+      "Id": "mr_replace_opposed_traits",
+      "Type": "SWITCH",
+      "IconPath": "ui/Icons/iconTraits",
+      "BoolVal": true
     }
   ]
 }

@@ -31,11 +31,24 @@ namespace MetaRules.Game
         }
         public bool AddTrait(string id)
         {
-            // Do not remove opposite traits or execute a partial conflicting addition.
+            // Do not remove conflicting traits (addTrait silently drops traits_to_remove)
+            // or execute a partial conflicting addition.
             ActorTrait trait = AssetManager.traits.get(id);
-            return trait != null && !actor.hasOppositeTrait(trait) && actor.addTrait(trait, false);
+            return trait != null && Opposites(id)?.Count == 0 && !actor.hasOppositeTrait(trait) && actor.addTrait(trait, false);
         }
         public void RemoveTrait(string id) => actor.removeTrait(id);
+        public List<string> Opposites(string id)
+        {
+            var held = new List<string>();
+            if (AssetManager.traits.get(id) == null) return held;
+            foreach (ActorTrait other in new List<ActorTrait>(actor.getTraits()))
+            {
+                if (!WorldRules.Opposed(id, other.id)) continue;
+                if (!other.can_be_removed) return null;
+                held.Add(other.id);
+            }
+            return held;
+        }
 
         public string SlotOf(string id)
         {
@@ -237,13 +250,16 @@ namespace MetaRules.Game
             return result;
         }
 
-        static Evaluation Effects(Actor actor) => RuleEngine.Evaluate(new ActorSubject(actor), Applicable(actor), EquipmentRules(actor));
+        static Evaluation Effects(Actor actor) => RuleEngine.Evaluate(new ActorSubject(actor), Applicable(actor), EquipmentRules(actor), Opposed);
 
-        static IEnumerable<RuleSet> EquipmentRules(Actor actor)
+        // 'freed': the slot of an item about to be handed over, whose current item leaves.
+        static IEnumerable<RuleSet> EquipmentRules(Actor actor, Item freed = null)
         {
             if (actor.equipment == null) yield break;
+            EquipmentAsset replaced = freed?.getAsset();
             foreach (Item item in actor.equipment.getItems())
             {
+                if (replaced != null && item.getAsset()?.equipment_type == replaced.equipment_type) continue;
                 RuleSet set = Get(Handle(MetaKind.Equipment, item, item.data));
                 if (set != null) yield return set;
             }
@@ -284,6 +300,7 @@ namespace MetaRules.Game
             TraitLedger ledger = string.IsNullOrEmpty(json) ? new TraitLedger() : JsonConvert.DeserializeObject<TraitLedger>(json);
             if (ledger?.Owned == null) throw new InvalidOperationException("Invalid trait provenance for actor " + actor.id);
             if (ledger.Items == null) ledger.Items = new Dictionary<string, ItemGrant>();
+            if (ledger.Served == null) ledger.Served = new Dictionary<string, List<string>>();
             state = new ActorState { Actor = actor, Ledger = ledger };
             actors[actor.id] = state;
             return state;
@@ -311,7 +328,7 @@ namespace MetaRules.Game
                 }
                 ActorState state = State(actor);
                 Mutating = true;
-                RuleEngine.Reconcile(new ActorSubject(actor), desired, state.Ledger);
+                RuleEngine.Reconcile(new ActorSubject(actor), desired, state.Ledger, Main.ReplaceOpposedTraits);
                 if (!state.Ledger.IsEmpty()) actor.data.set(LedgerKey, JsonConvert.SerializeObject(state.Ledger));
                 else actor.data.removeString(LedgerKey);
                 if (!SameStats(state.Stats, desired.Stats))
@@ -431,6 +448,13 @@ namespace MetaRules.Game
                     if (subspecies.data.species_id != actor.subspecies.data.species_id) return null;
                     apply = () => actor.setSubspecies(subspecies);
                     break;
+                case Item item when manual:
+                    if (!CanWear(actor, item) || item.getActor() == actor) return null;
+                    // A cursed item does not let go of its current wearer.
+                    if (item.getActor() != null && item.isCursed()) return null;
+                    if (!actor.equipment.getSlot(item.getAsset().equipment_type).canChangeSlot()) return null;
+                    apply = () => HandOver(actor, item);
+                    break;
                 case Language language:
                     if (!Convertible(actor) || !actor.subspecies.has_advanced_communication) return null;
                     apply = () => actor.joinLanguage(language);
@@ -482,12 +506,123 @@ namespace MetaRules.Game
                     break;
                 default: return null;
             }
+            Item given = target.Target as Item;
+            return RuleEngine.CanMove(subject, changes, targets, Kept(actor, changes, given), Settled(actor, changes, given)) ? apply : null;
+        }
+
+        // The groups and worn items a move leaves in place.
+        static List<RuleSet> Kept(Actor actor, IDictionary<MetaKind, long> changes, Item given)
+        {
             var kept = new List<RuleSet>();
             foreach (MetaKind other in Enum.GetValues(typeof(MetaKind)))
                 if (!changes.ContainsKey(other)) kept.Add(Get(Member(actor, other)));
-            kept.AddRange(EquipmentRules(actor));
-            return RuleEngine.CanMove(subject, changes, targets, kept) ? apply : null;
+            kept.AddRange(EquipmentRules(actor, given));
+            return kept;
         }
+
+        // The creature's traits once everything it would belong to and wear is reconciled:
+        // a new group's or item's traits may replace or override ones another group
+        // requires, which would only get it expelled on the next scan.
+        static Func<string, bool?> Settled(Actor actor, IDictionary<MetaKind, long> changes, Item given)
+        {
+            var groups = new List<RuleSet>();
+            foreach (MetaKind kind in Enum.GetValues(typeof(MetaKind)))
+            {
+                if (kind == MetaKind.Equipment) continue;
+                if (!changes.TryGetValue(kind, out long id)) groups.Add(Get(Member(actor, kind)));
+                else if (id >= 0) groups.Add(Get(Find(kind, id)));
+            }
+            var worn = new List<RuleSet>(EquipmentRules(actor, given));
+            if (given != null) worn.Add(Get(Handle(MetaKind.Equipment, given, given.data)));
+            Evaluation after = RuleEngine.Evaluate(new ActorSubject(actor), groups, worn, Opposed);
+            return RuleEngine.Settled(after, Ledger(actor), Opposed);
+        }
+
+        // Read-only: previews must not create or cache provenance.
+        static TraitLedger Ledger(Actor actor)
+        {
+            if (actors.TryGetValue(actor.id, out ActorState state) && state.Actor == actor) return state.Ledger;
+            actor.data.get(LedgerKey, out string json, null);
+            if (string.IsNullOrEmpty(json)) return null;
+            try { return JsonConvert.DeserializeObject<TraitLedger>(json); }
+            catch (Exception) { return null; }
+        }
+
+        // The group or worn item whose requirements this creature meets today but would
+        // break once the item's traits settle.
+        static MetaHandle BrokenBy(Actor actor, Item item)
+        {
+            var changes = new Dictionary<MetaKind, long> { { MetaKind.Equipment, item.data.id } };
+            Func<string, bool?> traits = Settled(actor, changes, item);
+            var subject = new ActorSubject(actor);
+            var kept = new List<MetaHandle>();
+            foreach (MetaKind kind in Enum.GetValues(typeof(MetaKind))) kept.Add(Member(actor, kind));
+            EquipmentAsset replaced = item.getAsset();
+            if (actor.equipment != null)
+                foreach (Item worn in actor.equipment.getItems())
+                    if (worn.getAsset()?.equipment_type != replaced?.equipment_type) kept.Add(Handle(MetaKind.Equipment, worn, worn.data));
+            foreach (MetaHandle handle in kept)
+            {
+                RuleSet set = Get(handle);
+                if (set != null && set.Allows(subject) && !RuleEngine.CanMove(subject, changes, new RuleSet[0], new[] { set }, traits)) return handle;
+            }
+            return null;
+        }
+
+        // The worn item's traits that override ones this creature's groups declare.
+        public static List<KeyValuePair<string, string>> Overrides(MetaHandle item, Actor actor)
+        {
+            var result = new List<KeyValuePair<string, string>>();
+            if (!Ready || actor == null || !(item?.Target is Item) || !Belongs(actor, item)) return result;
+            RuleSet set = Get(item);
+            if (set == null || !set.Enabled) return result;
+            foreach (var pair in Effects(actor).Overridden)
+                if (set.Declarations.Exists(d => d.Enabled && d.Kind == EffectKind.Trait && d.Value == pair.Value)) result.Add(pair);
+            return result;
+        }
+
+        static bool CanWear(Actor actor, Item item)
+        {
+            EquipmentAsset asset = item.getAsset();
+            return asset != null && actor.equipment != null && actor.canUseItems() && actor.asset.canEditItem(asset);
+        }
+
+        // Hand over this exact item, as a city hands out its storage: it leaves its wearer or
+        // storage, and whatever the new wearer held in that slot goes to their own city.
+        static void HandOver(Actor actor, Item item)
+        {
+            EquipmentType type = item.getAsset().equipment_type;
+            Actor wearer = item.getActor();
+            if (wearer?.equipment != null && wearer.equipment.getSlot(type).getItem() == item)
+            {
+                wearer.equipment.getSlot(type).takeAwayItem();
+                wearer.setStatsDirty();
+            }
+            City storage = item.getCity();
+            if (storage != null)
+            {
+                storage.data.equipment.getEquipmentList(type).Remove(item.id);
+                item.clearCity();
+                storage._storage_version++;
+            }
+            ActorEquipmentSlot slot = actor.equipment.getSlot(type);
+            if (!slot.isEmpty()) UnequipToStorage(actor, slot);
+            actor.equipment.setItem(item, actor);
+            actor.setStatsDirty();
+        }
+
+        // Either side may list the other: mods do not always declare opposites both ways.
+        // Traits that remove one another on addition (another tier, school or desire of the
+        // same kind) cannot be held together either.
+        public static bool Opposed(string a, string b)
+        {
+            ActorTrait first = AssetManager.traits.get(a), second = AssetManager.traits.get(b);
+            return first != null && second != null && first != second &&
+                (first.opposite_traits?.Contains(second) == true || second.opposite_traits?.Contains(first) == true ||
+                 Removes(first, second) || Removes(second, first));
+        }
+
+        static bool Removes(ActorTrait trait, ActorTrait other) => trait.traits_to_remove != null && Array.IndexOf(trait.traits_to_remove, other) >= 0;
 
         // Only explicit mod actions use this setting; native conversion remains untouched.
         static bool Convertible(Actor actor) => Main.OverrideCulturalBlock || !actor.hasCulture() || actor.culture.isPossibleToConvertToOtherMeta();
@@ -576,8 +711,10 @@ namespace MetaRules.Game
             ReferenceEquals(world, World.world?.map_stats) && Find(meta.Kind, meta.Id)?.Target == meta.Target &&
             Plan(actor, meta.Kind, meta.Id, true) != null && !IsBroken(meta);
 
-        public static string AdditionProblem(MetaHandle meta, Actor actor)
+        // 'blocker': the group or item named by the problem, if any.
+        public static string AdditionProblem(MetaHandle meta, Actor actor, out string blocker)
         {
+            blocker = null;
             if (!Ready || Mutating || meta == null || actor == null || !actor.isAlive() || IsBroken(meta) ||
                 !ReferenceEquals(world, World.world?.map_stats) || Find(meta.Kind, meta.Id)?.Target != meta.Target)
                 return "member_add_unavailable";
@@ -585,6 +722,12 @@ namespace MetaRules.Game
             if (set != null && set.Enabled && set.Banned.Contains(actor.id)) return "member_add_removed";
             if (!RuleEngine.CanJoin(new ActorSubject(actor), meta.Kind, meta.Id, set, new RuleSet[0]))
                 return "member_add_requirements";
+            if (meta.Target is Item item)
+            {
+                if (!CanWear(actor, item)) return "wearer_add_cannot_use";
+                blocker = BrokenBy(actor, item)?.Name;
+                return blocker == null ? "wearer_add_blocked" : "wearer_add_breaks";
+            }
             return "member_add_blocked";
         }
 
@@ -593,6 +736,7 @@ namespace MetaRules.Game
         public static bool TryAdd(MetaHandle meta, Actor actor)
         {
             if (!CanAdd(meta, actor)) return false;
+            Actor previous = (meta.Target as Item)?.getActor();
             try
             {
                 Action apply = Plan(actor, meta.Kind, meta.Id, true);
@@ -603,8 +747,9 @@ namespace MetaRules.Game
             catch (Exception e) { Report(e); return false; }
             finally { Mutating = false; }
             Reconcile(actor);
+            if (previous != null) Reconcile(previous);
             RescanSoon();
-            return Member(actor, meta.Kind)?.Id == meta.Id;
+            return Belongs(actor, meta);
         }
 
         // Removing an individual bans it from this meta and expels it now.

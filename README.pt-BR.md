@@ -37,7 +37,7 @@ Defina o que os membros recebem:
 
 Exemplo: todos os falantes de um idioma específico recebem um traço; todos os soldados de um exército recebem +10 de armadura.
 
-Traços anteriores ao benefício são preservados. Se vários grupos concedem o mesmo traço temporário, ele só é retirado quando não houver mais fontes ativas. Traços opostos não são apagados para forçar uma declaração. Os bônus de atributos se somam entre grupos, sem acumular a cada atualização.
+Traços anteriores ao benefício são preservados. Se vários grupos concedem o mesmo traço temporário, ele só é retirado quando não houver mais fontes ativas. Traços conflitantes são opostos ou traços que se removem ao serem adicionados (outro tier, escola ou desejo do mesmo tipo, via `traits_to_remove`). Quando várias fontes declaram traços conflitantes, o traço de um item vence o dos grupos do portador enquanto ele o usa; fora isso, vence o primeiro grupo (exército, clã, cultura, religião, cidade, reino, idioma, família, subespécie). O traço sobrescrito volta quando a fonte vencedora acaba. Traços conflitantes que não podem ser removidos nunca são apagados à força. Os bônus de atributos se somam entre grupos, sem acumular a cada atualização.
 
 O equipamento é entregue **uma vez por pertencimento**, substituindo o item daquele espaço (o antigo vai para o depósito da cidade). Se depois a criatura trocar, melhorar ou quebrar o item, o mod não o recria. Ao sair, o item "enquanto pertencer" só é removido se ainda for o mesmo; o permanente fica. Só criaturas que usam itens recebem equipamento; se vários grupos declararem o mesmo espaço, vale o primeiro.
 
@@ -57,7 +57,9 @@ Exemplo: uma espada só pode ser usada por membros da Casa do Sol; enquanto equi
 
 Itens guardados não concedem benefícios. Ao desequipar, trocar, destruir ou pausar, os benefícios temporários desaparecem nas próximas verificações; traços permanentes e vínculos concedidos continuam. Fontes de traços e bônus são combinadas entre grupos e equipamentos. Declarações de outros equipamentos usam espaços diferentes do item que as concede, para preservar a fonte dos benefícios. Mudanças de meta feitas pelo mod também respeitam as exigências dos equipamentos mantidos.
 
-Quem não cumprir as exigências é desequipado na próxima verificação. O item volta ao depósito da cidade, se houver; sem cidade, o item configurado é preservado sem portador. Isso também vale para itens amaldiçoados. **Portadores → Desequipar** retira o item imediatamente, mesmo com as regras pausadas, e bloqueia a criatura enquanto as regras estiverem ativas; **Readmitir** libera o uso novamente. O seletor de condições mostra nome, ID e portador/local do item, com busca e até 200 resultados por vez.
+Quem não cumprir as exigências é desequipado na próxima verificação. O item volta ao depósito da cidade, se houver; sem cidade, o item configurado é preservado sem portador. Isso também vale para itens amaldiçoados. **Portadores → Desequipar** retira o item imediatamente, mesmo com as regras pausadas, e bloqueia a criatura enquanto as regras estiverem ativas; **Readmitir** libera o uso novamente.
+
+**Adicionar portador** entrega este item exato, com ou sem regras, a qualquer criatura escolhida (com busca e filtro de elegíveis). Ele sai do portador atual ou do depósito da cidade; o item que a nova portadora usava nesse espaço vai para o depósito da cidade dela, ou se perde se ela não tiver cidade. Exigências, remoções, itens amaldiçoados e espécies que não podem usar o item são respeitados. Os grupos da nova portadora são checados contra os traços que ela terá depois que as concessões do item se acomodarem: a entrega é recusada, citando o grupo, se substituir ou sobrescrever um traço que um deles exige. O seletor de condições mostra nome, ID e portador/local do item, com busca e até 200 resultados por vez.
 
 ### Membros
 
@@ -68,6 +70,10 @@ A página **Membros** lista as criaturas do meta (com busca; clique no nome para
 ### Configurações do mod
 
 Abra **Configurações do mod** no editor ou nas opções do Meta Rules no NeoModLoader. **Ignorar bloqueios de conversão cultural** é global, persistente e desativada por padrão. Ativada, declarações e adições manuais podem superar `true_roots` (True Roots), mas continuam respeitando suas exigências, remoções e limites estruturais do jogo. A conversão natural do jogo não muda. Desativar não desfaz transferências já realizadas; a alteração vale nas próximas verificações.
+
+**Sobrescrever traços conflitantes** vem ativada por padrão: um traço declarado substitui os opostos que a criatura tem (como os tiers de outro mod), e uma concessão temporária os devolve quando termina. Desativada, concessões conflitantes são ignoradas.
+
+O editor recusa combinações de traços impossíveis: traços opostos declarados, uma exigência que pede opostos (ou um traço e sua negação) ao mesmo tempo, ou um traço declarado que quebra a exigência da própria regra. Esses traços aparecem esmaecidos no seletor.
 
 ### Detalhes e opções
 
