@@ -2,6 +2,8 @@
 
 ## 0.8.0
 
+- See why a rule does not apply. Declarations that do not reach every member get a colored dot and a **Not applying** row with their count and main reason (a requirement and its condition, a game limit, a ban, a cursed item, another source that wins, a trait changed later by the game or another mod). The declaration editor shows a **Status** card with a bar split by reason and previews unsaved changes; the members and wearers lists mark the creatures a declaration skips, and refused additions say exactly why.
+- A worn item's group grants and declared equipment now win over its wearer's groups while worn, like its traits (e.g. a ring granting a language over the species' language).
 - Traits that remove one another on addition (`traits_to_remove`: another tier, school or desire of the same kind) count as conflicting, in the editor and when granting. Previously such grants silently removed each other and, when two sources declared them, alternated on every scan.
 - Conflicting declared traits from several sources settle instead of alternating: a worn item's trait overrides its wearer's groups while worn (e.g. a sword teaching a sword school over the bare-handed school a species teaches); otherwise the first group wins. The overridden trait returns when the item leaves. Adding a wearer reports which group traits the item overrides.
 - Add wearer and membership grants check the creature's kept groups against the traits it would hold once the new item's or group's grants settle. A handover that would replace or override a trait one of its groups requires is refused, naming that group.

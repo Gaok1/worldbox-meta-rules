@@ -109,7 +109,7 @@ namespace MetaRules.Game
 
     // Rules live on their target meta; trait provenance lives on each affected actor.
     // Both use vanilla custom save data, with no external files or cross-world IDs.
-    public static class WorldRules
+    public static partial class WorldRules
     {
         public const string SaveKey = "gaok1_meta_rules_v1";
         const string LedgerKey = "gaok1_meta_traits_v1";
@@ -150,6 +150,7 @@ namespace MetaRules.Game
         public static RuleSet Get(MetaHandle meta)
         {
             if (meta == null) return null;
+            if (previewKey != null && meta.Key == previewKey) return previewSet;
             if (broken.Contains(meta.Key)) return null;
             if (rules.TryGetValue(meta.Key, out RuleSet known)) return known;
             meta.Data.get(SaveKey, out string json, null);
@@ -252,17 +253,23 @@ namespace MetaRules.Game
 
         static Evaluation Effects(Actor actor) => RuleEngine.Evaluate(new ActorSubject(actor), Applicable(actor), EquipmentRules(actor), Opposed);
 
-        // 'freed': the slot of an item about to be handed over, whose current item leaves.
         static IEnumerable<RuleSet> EquipmentRules(Actor actor, Item freed = null)
+        {
+            foreach (MetaHandle item in Worn(actor, freed))
+            {
+                RuleSet set = Get(item);
+                if (set != null) yield return set;
+            }
+        }
+
+        // 'freed': the slot of an item about to be handed over, whose current item leaves.
+        static IEnumerable<MetaHandle> Worn(Actor actor, Item freed = null)
         {
             if (actor.equipment == null) yield break;
             EquipmentAsset replaced = freed?.getAsset();
             foreach (Item item in actor.equipment.getItems())
-            {
-                if (replaced != null && item.getAsset()?.equipment_type == replaced.equipment_type) continue;
-                RuleSet set = Get(Handle(MetaKind.Equipment, item, item.data));
-                if (set != null) yield return set;
-            }
+                if (replaced == null || item.getAsset()?.equipment_type != replaced.equipment_type)
+                    yield return Handle(MetaKind.Equipment, item, item.data);
         }
 
         // Inspect actual slots: a creature can wear several different rule sources.
@@ -428,39 +435,53 @@ namespace MetaRules.Game
             }
         }
 
-        // What joining would take for this creature, or null when it is not allowed.
-        static Action Plan(Actor actor, MetaKind kind, long id, bool manual = false)
+        // What joining would take for this creature, or null when it is not allowed; 'why'
+        // then says what refused it.
+        static Action Plan(Actor actor, MetaKind kind, long id, bool manual = false, Finding why = null)
         {
-            if (actor?.data == null || !actor.isAlive() || Member(actor, kind)?.Id == id || actor.subspecies == null || actor.asset == null || actor.asset.is_boat) return null;
+            Action No(string reason, MetaHandle who = null, string name = null)
+            {
+                if (why != null)
+                {
+                    why.State = Standing.Blocked; why.Reason = reason;
+                    why.Name = who?.Name ?? name; why.Kind = who?.Kind;
+                }
+                return null;
+            }
+            if (actor?.data == null || !actor.isAlive() || actor.subspecies == null || actor.asset == null || actor.asset.is_boat) return No("unavailable");
+            if (Member(actor, kind)?.Id == id) return No("already");
             MetaHandle target = Find(kind, id);
-            if (target == null) return null;
-            var subject = new ActorSubject(actor);
+            if (target == null) return No("missing");
             var changes = new Dictionary<MetaKind, long> { { kind, id } };
-            var targets = new List<RuleSet> { Get(target) };
+            var targets = new List<MetaHandle> { target };
             Action apply;
             switch (target.Target)
             {
                 case Family family when manual:
-                    if (family.data.species_id != actor.subspecies.data.species_id) return null;
+                    if (family.data.species_id != actor.subspecies.data.species_id) return No("species");
                     apply = () => actor.setFamily(family);
                     break;
                 case Subspecies subspecies when manual:
-                    if (subspecies.data.species_id != actor.subspecies.data.species_id) return null;
+                    if (subspecies.data.species_id != actor.subspecies.data.species_id) return No("species");
                     apply = () => actor.setSubspecies(subspecies);
                     break;
                 case Item item when manual:
-                    if (!CanWear(actor, item) || item.getActor() == actor) return null;
+                    if (!CanWear(actor, item)) return No("cannot_use");
+                    if (item.getActor() == actor) return No("already");
                     // A cursed item does not let go of its current wearer.
-                    if (item.getActor() != null && item.isCursed()) return null;
-                    if (!actor.equipment.getSlot(item.getAsset().equipment_type).canChangeSlot()) return null;
+                    if (item.getActor() != null && item.isCursed()) return No("cursed_wearer", null, item.getActor().getName());
+                    ActorEquipmentSlot slot = actor.equipment.getSlot(item.getAsset().equipment_type);
+                    if (!slot.canChangeSlot()) return No("cursed_slot", null, slot.getItem().getName());
                     apply = () => HandOver(actor, item);
                     break;
                 case Language language:
-                    if (!Convertible(actor) || !actor.subspecies.has_advanced_communication) return null;
+                    if (!Convertible(actor)) return No("cultural", Member(actor, MetaKind.Culture));
+                    if (!actor.subspecies.has_advanced_communication) return No("no_speech");
                     apply = () => actor.joinLanguage(language);
                     break;
                 case Culture culture:
-                    if (!Convertible(actor) || !actor.subspecies.has_advanced_memory) return null;
+                    if (!Convertible(actor)) return No("cultural", Member(actor, MetaKind.Culture));
+                    if (!actor.subspecies.has_advanced_memory) return No("no_memory");
                     apply = () =>
                     {
                         bool converted = actor.hasCulture();
@@ -469,54 +490,76 @@ namespace MetaRules.Game
                     };
                     break;
                 case Religion religion:
-                    if (!Convertible(actor) || !actor.subspecies.has_advanced_memory) return null;
+                    if (!Convertible(actor)) return No("cultural", Member(actor, MetaKind.Culture));
+                    if (!actor.subspecies.has_advanced_memory) return No("no_memory");
                     apply = () => { actor.setReligion(religion); religion.countConversion(); };
                     break;
                 case Clan clan:
-                    if (!Convertible(actor) || !actor.subspecies.has_advanced_memory || clan.isFull() || actor.isKing() ||
-                        !string.IsNullOrEmpty(clan.data.original_actor_asset) && clan.data.original_actor_asset != actor.asset.id) return null;
+                    if (!Convertible(actor)) return No("cultural", Member(actor, MetaKind.Culture));
+                    if (!actor.subspecies.has_advanced_memory) return No("no_memory");
+                    if (clan.isFull()) return No("clan_full");
+                    if (actor.isKing()) return No("king_clan");
+                    if (!string.IsNullOrEmpty(clan.data.original_actor_asset) && clan.data.original_actor_asset != actor.asset.id) return No("clan_species");
                     apply = () => { actor.clan?.tryForgetChief(actor); actor.setClan(clan); };
                     break;
                 case City city:
-                    if (!CanMoveTo(actor, city)) return null;
+                    string refused = Refusal(actor, city);
+                    if (refused != null) return No(refused, target);
                     AddMove(actor, city, changes, targets);
                     apply = () => MoveTo(actor, city);
                     break;
                 case Kingdom kingdom:
                     // Live in the capital, or any city of the kingdom that accepts the creature.
                     City home = null;
+                    string first = null;
                     foreach (City candidate in Candidates(kingdom))
-                        if (CanMoveTo(actor, candidate)) { home = candidate; break; }
-                    if (home == null) return null;
+                    {
+                        string refusal = Refusal(actor, candidate);
+                        if (refusal == null) { home = candidate; break; }
+                        first = first ?? refusal;
+                    }
+                    if (home == null) return No(first == "ruler" || first == "not_sapient" ? first : "no_city");
                     changes.Clear();
+                    targets.Clear();
+                    targets.Add(target);
                     AddMove(actor, home, changes, targets);
                     apply = () => MoveTo(actor, home);
                     break;
                 case Army army:
                     // Armies belong to one city: only its residents can serve, as warriors.
                     City barracks = army.getCity();
-                    if (barracks == null || actor.city != barracks || actor.isKing() || actor.isCityLeader() || actor.isBaby()) return null;
+                    if (barracks == null) return No("unavailable");
+                    if (actor.city != barracks) return No("army_resident", Handle(MetaKind.City, barracks, barracks.data));
+                    if (actor.isKing() || actor.isCityLeader()) return No("ruler");
+                    if (actor.isBaby()) return No("baby");
                     bool warrior = actor.isWarrior();
-                    if (!warrior && !barracks.checkCanMakeWarrior(actor)) return null;
+                    if (!warrior && !barracks.checkCanMakeWarrior(actor)) return No("army_cannot");
                     apply = () =>
                     {
                         if (!actor.isWarrior()) barracks.makeWarrior(actor);
                         actor.setArmy(army);
                     };
                     break;
-                default: return null;
+                default: return No("unavailable");
             }
             Item given = target.Target as Item;
-            return RuleEngine.CanMove(subject, changes, targets, Kept(actor, changes, given), Settled(actor, changes, given)) ? apply : null;
+            List<MetaHandle> kept = Kept(actor, changes, given);
+            List<RuleSet> targetSets = targets.ConvertAll(Get), keptSets = kept.ConvertAll(Get);
+            RuleSet refusing = RuleEngine.Refusing(new ActorSubject(actor), changes, targetSets, keptSets, Settled(actor, changes, given), out Restriction rule);
+            if (refusing == null) return apply;
+            int index = targetSets.IndexOf(refusing);
+            MetaHandle blocker = index >= 0 ? targets[index] : kept[keptSets.IndexOf(refusing)];
+            if (why != null) why.Rule = rule;
+            return No(rule == null ? "banned" : index >= 0 ? "target_requirement" : "group_requirement", blocker);
         }
 
         // The groups and worn items a move leaves in place.
-        static List<RuleSet> Kept(Actor actor, IDictionary<MetaKind, long> changes, Item given)
+        static List<MetaHandle> Kept(Actor actor, IDictionary<MetaKind, long> changes, Item given)
         {
-            var kept = new List<RuleSet>();
+            var kept = new List<MetaHandle>();
             foreach (MetaKind other in Enum.GetValues(typeof(MetaKind)))
-                if (!changes.ContainsKey(other)) kept.Add(Get(Member(actor, other)));
-            kept.AddRange(EquipmentRules(actor, given));
+                if (other != MetaKind.Equipment && !changes.ContainsKey(other) && Member(actor, other) is MetaHandle meta) kept.Add(meta);
+            kept.AddRange(Worn(actor, given));
             return kept;
         }
 
@@ -546,27 +589,6 @@ namespace MetaRules.Game
             if (string.IsNullOrEmpty(json)) return null;
             try { return JsonConvert.DeserializeObject<TraitLedger>(json); }
             catch (Exception) { return null; }
-        }
-
-        // The group or worn item whose requirements this creature meets today but would
-        // break once the item's traits settle.
-        static MetaHandle BrokenBy(Actor actor, Item item)
-        {
-            var changes = new Dictionary<MetaKind, long> { { MetaKind.Equipment, item.data.id } };
-            Func<string, bool?> traits = Settled(actor, changes, item);
-            var subject = new ActorSubject(actor);
-            var kept = new List<MetaHandle>();
-            foreach (MetaKind kind in Enum.GetValues(typeof(MetaKind))) kept.Add(Member(actor, kind));
-            EquipmentAsset replaced = item.getAsset();
-            if (actor.equipment != null)
-                foreach (Item worn in actor.equipment.getItems())
-                    if (worn.getAsset()?.equipment_type != replaced?.equipment_type) kept.Add(Handle(MetaKind.Equipment, worn, worn.data));
-            foreach (MetaHandle handle in kept)
-            {
-                RuleSet set = Get(handle);
-                if (set != null && set.Allows(subject) && !RuleEngine.CanMove(subject, changes, new RuleSet[0], new[] { set }, traits)) return handle;
-            }
-            return null;
         }
 
         // The worn item's traits that override ones this creature's groups declare.
@@ -634,23 +656,25 @@ namespace MetaRules.Game
         }
 
         // The game's hard rules for changing city (City.isPossibleToJoin without its
-        // "only move to smaller cities" migration heuristic).
-        static bool CanMoveTo(Actor actor, City city)
+        // "only move to smaller cities" migration heuristic); null when allowed.
+        static string Refusal(Actor actor, City city)
         {
-            if (city == null || !city.isAlive() || city == actor.city || !actor.isSapient()) return false;
-            if (actor.city != null && (actor.isKing() || actor.isCityLeader())) return false;
-            return city.isNeutral() || city.isWelcomedToJoin(actor);
+            if (city == null || !city.isAlive()) return "unavailable";
+            if (city == actor.city) return "already";
+            if (!actor.isSapient()) return "not_sapient";
+            if (actor.city != null && (actor.isKing() || actor.isCityLeader())) return "ruler";
+            return city.isNeutral() || city.isWelcomedToJoin(actor) ? null : "not_welcome";
         }
 
-        static void AddMove(Actor actor, City city, Dictionary<MetaKind, long> changes, List<RuleSet> targets)
+        static void AddMove(Actor actor, City city, Dictionary<MetaKind, long> changes, List<MetaHandle> targets)
         {
             changes[MetaKind.City] = city.id;
             if (city.kingdom != null)
             {
                 changes[MetaKind.Kingdom] = city.kingdom.id;
-                targets.Add(Get(Handle(MetaKind.Kingdom, city.kingdom, city.kingdom.data)));
+                targets.Add(Handle(MetaKind.Kingdom, city.kingdom, city.kingdom.data));
             }
-            targets.Add(Get(Handle(MetaKind.City, city, city.data)));
+            targets.Add(Handle(MetaKind.City, city, city.data));
             if (actor.army != null) changes[MetaKind.Army] = -1;
         }
 
@@ -668,17 +692,6 @@ namespace MetaRules.Game
             members = all.Count;
             foreach (Actor actor in all) if (set != null && !set.Allows(new ActorSubject(actor))) failing++;
             return failing;
-        }
-
-        public static int CountJoining(MetaHandle declarer, MetaKind kind, long id, out int members)
-        {
-            int joining = 0;
-            List<Actor> all = Members(declarer);
-            members = all.Count;
-            RuleSet source = declarer?.Kind == MetaKind.Equipment ? Get(declarer) : null;
-            foreach (Actor actor in all)
-                if (!RuleEngine.RequiresExit(new ActorSubject(actor), source) && Plan(actor, kind, id) != null) joining++;
-            return joining;
         }
 
         public static Kingdom KingdomOf(MetaHandle meta)
@@ -711,24 +724,14 @@ namespace MetaRules.Game
             ReferenceEquals(world, World.world?.map_stats) && Find(meta.Kind, meta.Id)?.Target == meta.Target &&
             Plan(actor, meta.Kind, meta.Id, true) != null && !IsBroken(meta);
 
-        // 'blocker': the group or item named by the problem, if any.
-        public static string AdditionProblem(MetaHandle meta, Actor actor, out string blocker)
+        // Why a manual addition is refused.
+        public static Finding AdditionProblem(MetaHandle meta, Actor actor)
         {
-            blocker = null;
+            var why = new Finding { State = Standing.Blocked, Reason = "unavailable" };
             if (!Ready || Mutating || meta == null || actor == null || !actor.isAlive() || IsBroken(meta) ||
-                !ReferenceEquals(world, World.world?.map_stats) || Find(meta.Kind, meta.Id)?.Target != meta.Target)
-                return "member_add_unavailable";
-            RuleSet set = Get(meta);
-            if (set != null && set.Enabled && set.Banned.Contains(actor.id)) return "member_add_removed";
-            if (!RuleEngine.CanJoin(new ActorSubject(actor), meta.Kind, meta.Id, set, new RuleSet[0]))
-                return "member_add_requirements";
-            if (meta.Target is Item item)
-            {
-                if (!CanWear(actor, item)) return "wearer_add_cannot_use";
-                blocker = BrokenBy(actor, item)?.Name;
-                return blocker == null ? "wearer_add_blocked" : "wearer_add_breaks";
-            }
-            return "member_add_blocked";
+                !ReferenceEquals(world, World.world?.map_stats) || Find(meta.Kind, meta.Id)?.Target != meta.Target) return why;
+            Plan(actor, meta.Kind, meta.Id, true, why);
+            return why;
         }
 
         // Reuse the declaration planner: manual additions obey requirements, bans and

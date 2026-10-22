@@ -43,6 +43,19 @@ for path in (ROOT / "Code").rglob("*.cs"):
 # Prefixes are completed dynamically by enum/stat selectors.
 keys -= {"mr_stat_", "mr_kind_"}
 assert keys <= en.keys(), f"Missing translations: {keys - en.keys()}"
+# Diagnosis reasons are shown as T("why_" + reason): every literal reason the planner,
+# the city check and the diagnosis report needs a text.
+reasons = set()
+for path in (ROOT / "Code/Game").glob("*.cs"):
+    text = path.read_text(encoding="utf-8")
+    spans = re.findall(r"\b(?:No|Note)\(([^;]*?)\);", text)
+    spans += re.findall(r"static string Refusal\(.*?\n        }", text, re.S)
+    spans += re.findall(r'Reason = "[a-z_]+"', text)
+    for span in spans:
+        reasons.update(re.findall(r'"([a-z_]+)"', span))
+assert reasons, "No diagnosis reasons found"
+missing = {"mr_why_" + r for r in reasons} - en.keys()
+assert not missing, f"Missing reason texts: {missing}"
 for key in ["declarations", "requirements", "add_declaration", "add_requirement", "open", "open_description", "title"]:
     assert "mr_" + key in en
 assert not list((ROOT / "Code").rglob("*.dll")), "Game binaries must not be distributed"

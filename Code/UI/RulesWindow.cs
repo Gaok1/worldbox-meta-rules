@@ -294,6 +294,10 @@ namespace MetaRules.UI
             if (IsEquipment) HelpBlock(T("equipment_intro"));
             Label(Block(22, "add_members"), "+  " + T(AddPeople), 0, 0, CW, 22,
                 () => { ResetEditor(); members = true; addingMembers = true; Build(); });
+            var diagnoses = new Dictionary<string, Diagnosis>();
+            if (set.Enabled)
+                foreach (Declaration d in set.Declarations)
+                    if (d.Enabled) diagnoses[d.Id] = WorldRules.Diagnose(selected, d);
             NativeUi.Group declarations = Section(T("declarations"), set.Declarations.Count);
             foreach (Declaration value in set.Declarations)
             {
@@ -302,9 +306,11 @@ namespace MetaRules.UI
                 if (!item.Enabled || !set.Enabled) Fade(token);
                 if (item.Kind == EffectKind.Stat) Badge(token, Number(item.Amount));
                 else if (item.Lifetime == Lifetime.Permanent) Corner(token, Gold);
+                if (diagnoses.TryGetValue(item.Id, out Diagnosis status) && Troubled(status)) Dot(token, StateColor(status.Worst));
             }
             Small(declarations.Grid, "+", 0, 0, Cell, () => { effect = new Declaration(); StartPicker(false); }, T("add_declaration"));
             if (set.Declarations.Count == 0) Hint(T("no_declarations") + " — " + T(IsEquipment ? "wearer_declarations_hint" : "declarations_hint"));
+            StatusRows(set, diagnoses);
 
             NativeUi.Group requirements = Section(T("requirements"), set.Restrictions.Count);
             float rowW = NativeUi.MakeList(requirements, 2f);
@@ -446,20 +452,8 @@ namespace MetaRules.UI
             bool grant = effect.Kind == EffectKind.Meta;
             TraitClash clash = ClashOf(effect);
             float statusY = grant ? 66 : 88;
-            float footerY = grant ? 116 : statusY + 32;
-            RectTransform block = Block(grant ? 140 : 144, "declaration");
-            if (grant)
-            {
-                int joining = WorldRules.CountJoining(selected, effect.Meta, effect.MetaId, out int total);
-                string text = string.Format(T("impact_join"), joining, total, DeclarationName(effect));
-                if (joining > 0) text += " " + string.Format(T("impact_join_leave"), KindName(effect.Meta).ToLowerInvariant());
-                Text impact = Paragraph(block, text, 0, 88, CW, 20, 6, TextAnchor.UpperCenter);
-                impact.color = joining > 0 ? Gold : Muted;
-                float height = Mathf.Max(20, Mathf.Ceil(impact.preferredHeight));
-                ((RectTransform)impact.transform).sizeDelta = new Vector2(CW, height);
-                footerY = 88 + height + 8;
-                block.sizeDelta = new Vector2(CW, footerY + 24);
-            }
+            float footerY = statusY + 32;
+            RectTransform block = Block(footerY + 24, "declaration");
             EditorHeader(block, T(exists ? "declaration" : "add_declaration"), () => { effect = null; Build(); });
 
             RectTransform card = Sliced(block, Slot, 0, 22, CW, 38);
@@ -503,6 +497,13 @@ namespace MetaRules.UI
             }, () => { effect = null; Build(); }, exists ? (Action)(() =>
             { RuleSet set = Current; set.Declarations.RemoveAll(d => d.Id == effect.Id); effect = null; Save(set); }) : null);
 
+            if (Chosen(effect))
+            {
+                Diagnosis status = WorldRules.Diagnose(selected, effect, Preview(effect));
+                string note = grant && status.Preview && status.Applied > 0
+                    ? string.Format(T("impact_join_leave"), KindName(effect.Meta).ToLowerInvariant()) : null;
+                StatusCard(status, note);
+            }
             if (clash != null) HelpBlock(ClashText(clash)).color = Bad;
             string helpText = effect.Kind == EffectKind.Trait ? "trait_help" : effect.Kind == EffectKind.Item ? "item_help" : grant ? "meta_help" : "stat_help";
             if (IsEquipment) HelpBlock(T("equipment_rules_help"));
@@ -1088,8 +1089,11 @@ namespace MetaRules.UI
                 Actor actor = value;
                 RectTransform row = Sliced(memberList.Grid, Slot, 0, 0, rowW, 22);
                 Avatar(row, actor);
-                RectTransform open = Button(row, 22, 0, rowW - 86, 22, null, () => { SelectedUnit.select(actor); ScrollWindow.showWindow("unit"); });
-                Text(open, Fit(actor.getName() ?? "#" + actor.id, 7, rowW - 86), 0, 0, rowW - 86, 22, 7, Ink, TextAnchor.MiddleLeft);
+                var issues = addingMembers ? null : WorldRules.Issues(selected, actor).Where(i => i.Value.State > Standing.Pending).ToList();
+                float nameW = rowW - 86 - (issues?.Count > 0 ? 20 : 0);
+                RectTransform open = Button(row, 22, 0, nameW, 22, null, () => { SelectedUnit.select(actor); ScrollWindow.showWindow("unit"); });
+                Text(open, Fit(actor.getName() ?? "#" + actor.id, 7, nameW), 0, 0, nameW, 22, 7, Ink, TextAnchor.MiddleLeft);
+                if (issues?.Count > 0) IssueChip(row, rowW - 84, actor, issues);
                 MetaSymbols.Tip(open, () => actor.getName() + " #" + actor.id, () => T("open_unit"));
                 if (addingMembers)
                 {
@@ -1115,11 +1119,7 @@ namespace MetaRules.UI
             LayoutRebuilder.ForceRebuildLayoutImmediate(content);
         }
 
-        static string AdditionProblem(Actor actor)
-        {
-            string key = WorldRules.AdditionProblem(selected, actor, out string blocker);
-            return blocker == null ? T(key) : string.Format(T(key), blocker);
-        }
+        static string AdditionProblem(Actor actor) => Why(WorldRules.AdditionProblem(selected, actor));
 
         // A new wearer is told which of its groups' traits the item now overrides.
         static string Added(Actor actor)
@@ -1129,6 +1129,152 @@ namespace MetaRules.UI
             var overrides = WorldRules.Overrides(selected, actor);
             if (overrides.Count == 0) return text;
             return text + " " + string.Format(T("wearer_overrides"), string.Join(", ", overrides.Select(p => TraitName(p.Value) + " > " + TraitName(p.Key))));
+        }
+
+        // ── Status: what each declaration actually does for the members, and why not.
+        static Color StateColor(Standing state) =>
+            state == Standing.Applied ? Good : state == Standing.Blocked ? Bad : state == Standing.Pending ? Muted : Gold;
+
+        static string Bullet(Standing state) => "<color=" + Tag(StateColor(state)) + ">●</color> ";
+
+        static string Why(Finding f)
+        {
+            string who = f.Name == null ? "" : f.Kind.HasValue ? KindName(f.Kind.Value) + " " + f.Name : f.Name;
+            string rule = f.Rule == null ? "" : string.Join(f.Rule.Any ? " " + T("or") + " " : " + ", f.Rule.Conditions.Select(Describe));
+            string text = string.Format(T("why_" + f.Reason), who, f.Trait == null ? "" : TraitName(f.Trait), rule, f.Other ?? "");
+            return text.Length == 0 ? text : char.ToUpper(text[0]) + text.Substring(1);
+        }
+
+        static string Headline(Diagnosis status)
+        {
+            if (status.Members == 0) return T(IsEquipment ? "diag_no_wearer" : "diag_no_members");
+            string text = IsEquipment && status.Checked == 1
+                ? T(status.Missing == 0 ? status.Preview ? "diag_would_wearer" : "diag_wearer" : status.Preview ? "diag_would_not_wearer" : "diag_not_wearer")
+                : status.Missing == 0 ? string.Format(T(status.Preview ? "diag_would_all" : "diag_all"), status.Checked)
+                : string.Format(T(status.Preview ? "diag_would" : "diag_applies"), status.Applied, status.Checked);
+            if (status.Checked < status.Members) text += " " + string.Format(T("diag_sampled"), status.Checked, status.Members);
+            return text;
+        }
+
+        // Something keeps the declaration from a member; a grant the next scan applies is not.
+        static bool Troubled(Diagnosis status) => status.Issues.Any(i => i.Key.State > Standing.Pending);
+
+        static string Reasons(Diagnosis status) =>
+            string.Join("\n", status.Issues.Select(i => Bullet(i.Key.State) + i.Value + " · " + Why(i.Key)));
+
+        // The rule set as it would be after saving this declaration; null when it is saved as is.
+        static RuleSet Preview(Declaration d)
+        {
+            RuleSet now = Current;
+            Declaration saved = now.Declarations.FirstOrDefault(x => x.Id == d.Id);
+            if (saved != null && saved.Enabled == d.Enabled && saved.Kind == d.Kind && saved.Value == d.Value && saved.Amount == d.Amount &&
+                saved.Lifetime == d.Lifetime && saved.Meta == d.Meta && saved.MetaId == d.MetaId) return null;
+            return new RuleSet
+            {
+                Enabled = now.Enabled, Banned = now.Banned, Restrictions = now.Restrictions,
+                Declarations = now.Declarations.Where(x => x.Id != d.Id).Concat(new[] { d }).ToList()
+            };
+        }
+
+        // Sizes a wrapped paragraph to its text and returns its height.
+        static float Grow(Text text, float w)
+        {
+            float height = Mathf.Ceil(text.preferredHeight);
+            ((RectTransform)text.transform).sizeDelta = new Vector2(w, height);
+            return height;
+        }
+
+        // A thin bar split by state: applied first, then each reason in proportion to its count.
+        static void StatusBar(Transform parent, Diagnosis status, float x, float y, float w)
+        {
+            Rect(parent, x, y, w, 5, Edge);
+            if (status.Checked == 0) return;
+            float cursor = x + 1, inner = w - 2;
+            void Part(int count, Color color)
+            {
+                float width = inner * count / status.Checked;
+                if (width > 0) Rect(parent, cursor, y + 1, width, 3, color);
+                cursor += width;
+            }
+            Part(status.Applied, Good);
+            foreach (var issue in status.Issues) Part(issue.Value, StateColor(issue.Key.State));
+        }
+
+        const int ShownReasons = 5;
+
+        static void StatusCard(Diagnosis status, string note)
+        {
+            RectTransform block = Block(10, "status");
+            RectTransform card = Sliced(block, Slot, 0, 0, CW, 10);
+            Color color = status.Members == 0 ? Muted : StateColor(status.Missing == 0 ? Standing.Applied : status.Worst);
+            Text(card, T("diag_title"), 6, 4, CW - 12, 10, 6, HeaderGold, TextAnchor.MiddleLeft);
+            if (status.Checked > 0) Text(card, status.Applied + "/" + status.Checked, 6, 4, CW - 12, 10, 7, color, TextAnchor.MiddleRight);
+            float y = 16;
+            Text headline = Paragraph(card, Headline(status), 6, y, CW - 12, 10, 7);
+            headline.color = color;
+            y += Grow(headline, CW - 12) + 3;
+            if (status.Checked > 0) { StatusBar(card, status, 6, y, CW - 12); y += 9; }
+            for (int i = 0; i < status.Issues.Count && i < ShownReasons; i++)
+            {
+                var issue = status.Issues[i];
+                Rect(card, 7, y + 3, 4, 4, Edge);
+                Rect(card, 8, y + 4, 2, 2, StateColor(issue.Key.State));
+                Text line = Paragraph(card, "<color=" + Tag(Ink) + ">" + issue.Value + "</color> · " + Why(issue.Key), 15, y, CW - 21, 10, 6);
+                y += Grow(line, CW - 21) + 2;
+            }
+            if (status.Issues.Count > ShownReasons)
+            {
+                Text more = Paragraph(card, string.Format(T("diag_more"), status.Issues.Count - ShownReasons), 15, y, CW - 21, 10, 6);
+                y += Grow(more, CW - 21) + 2;
+            }
+            if (note != null)
+            {
+                Text extra = Paragraph(card, note, 6, y + 1, CW - 12, 10, 6);
+                y += Grow(extra, CW - 12) + 3;
+            }
+            y += 4;
+            block.sizeDelta = card.sizeDelta = new Vector2(CW, y);
+        }
+
+        // Declarations that do not reach every member, with the main reason; click to edit.
+        static void StatusRows(RuleSet set, Dictionary<string, Diagnosis> diagnoses)
+        {
+            var failing = set.Declarations.Where(d => diagnoses.TryGetValue(d.Id, out Diagnosis status) && Troubled(status)).ToList();
+            if (failing.Count == 0) return;
+            NativeUi.Group group = Section(T("diag_section"), failing.Count);
+            float rowW = NativeUi.MakeList(group, 2f);
+            foreach (Declaration value in failing)
+            {
+                Declaration d = value;
+                Diagnosis status = diagnoses[d.Id];
+                Color color = StateColor(status.Worst);
+                RectTransform row = Button(group.Grid, 0, 0, rowW, 28, Slot, () => { effect = Clone(d); Build(); });
+                Rect(row, 3, 4, 2, 20, color);
+                if (d.Kind == EffectKind.Meta && WorldRules.Find(d.Meta, d.MetaId) is MetaHandle meta) MetaSymbols.Draw(row, meta, 8, 4, 20);
+                else Picture(row, DeclarationSprite(d), 9, 5, 18, 18);
+                string count = status.Applied + "/" + status.Checked;
+                float countW = Measure(count, 7) + 4, textW = rowW - 36;
+                Text(row, Fit(DeclarationName(d), 7, textW - countW - 2), 32, 3, textW - countW - 2, 12, 7, Ink, TextAnchor.MiddleLeft);
+                Text(row, count, rowW - countW - 5, 3, countW, 12, 7, color, TextAnchor.MiddleRight);
+                string reason = Why(status.Issues[0].Key) + (status.Issues.Count > 1 ? "  +" + (status.Issues.Count - 1) : "");
+                Text(row, Fit(reason, 6, textW), 32, 15, textW, 10, 6, Muted, TextAnchor.MiddleLeft);
+                MetaSymbols.Tip(row, () => DeclarationName(d), () => Headline(status) + "\n\n" + Reasons(status) + "\n\n" + T("diag_open"));
+            }
+        }
+
+        static void IssueChip(RectTransform row, float x, Actor actor, List<KeyValuePair<Declaration, Finding>> issues)
+        {
+            Standing worst = issues.Max(i => i.Value.State);
+            RectTransform chip = Button(row, x, 2, 18, 18, Slot, () => { });
+            Text(chip, "!", 0, 0, 18, 18, 9, StateColor(worst), TextAnchor.MiddleCenter);
+            MetaSymbols.Tip(chip, () => string.Format(T("diag_member_issues"), actor.getName()),
+                () => string.Join("\n", issues.Select(i => Bullet(i.Value.State) + DeclarationName(i.Key) + ": " + Why(i.Value))));
+        }
+
+        static void Dot(RectTransform token, Color color)
+        {
+            Rect(token, 1, 1, 8, 8, Edge);
+            Rect(token, 2, 2, 6, 6, color);
         }
 
         static void Avatar(RectTransform row, Actor actor)

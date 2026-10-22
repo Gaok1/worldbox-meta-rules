@@ -72,12 +72,16 @@ namespace MetaRules.Core
         // Individuals removed by hand; they may not belong while rules are enabled.
         public List<long> Banned = new List<long>();
 
-        public bool Allows(ISubject subject)
+        public bool Allows(ISubject subject) => !Bans(subject) && Failing(subject) == null;
+
+        public bool Bans(ISubject subject) => Enabled && Banned != null && Banned.Contains(subject.Id);
+
+        // The first active requirement the subject does not meet.
+        public Restriction Failing(ISubject subject)
         {
-            if (!Enabled) return true;
-            if (Banned != null && Banned.Contains(subject.Id)) return false;
-            foreach (Restriction rule in Restrictions) if (!rule.Allows(subject)) return false;
-            return true;
+            if (!Enabled) return null;
+            foreach (Restriction rule in Restrictions) if (!rule.Allows(subject)) return rule;
+            return null;
         }
     }
 
@@ -160,13 +164,21 @@ namespace MetaRules.Core
         // the item handed over. Targets admit the subject as it is now; kept groups must
         // still accept it once the move's trait grants settle ('traits', see Settled).
         public static bool CanMove(ISubject subject, IDictionary<MetaKind, long> changes, IEnumerable<RuleSet> targets, IEnumerable<RuleSet> kept,
-            Func<string, bool?> traits = null)
+            Func<string, bool?> traits = null) => Refusing(subject, changes, targets, kept, traits, out _) == null;
+
+        // The first rule set that refuses the move and the requirement it fails (null when
+        // the subject is banned from it); null when the move is allowed.
+        public static RuleSet Refusing(ISubject subject, IDictionary<MetaKind, long> changes, IEnumerable<RuleSet> targets, IEnumerable<RuleSet> kept,
+            Func<string, bool?> traits, out Restriction rule)
         {
+            rule = null;
             var moved = new Moved(subject, changes, null);
-            foreach (RuleSet set in targets) if (set != null && !set.Allows(moved)) return false;
+            foreach (RuleSet set in targets)
+                if (set != null && !set.Allows(moved)) { rule = set.Failing(moved); return set; }
             var settled = traits == null ? moved : new Moved(subject, changes, traits);
-            foreach (RuleSet set in kept) if (set != null && !set.Allows(settled)) return false;
-            return true;
+            foreach (RuleSet set in kept)
+                if (set != null && !set.Allows(settled)) { rule = set.Failing(settled); return set; }
+            return null;
         }
 
         // The traits a subject would hold once 'after' is reconciled: declared traits arrive
@@ -230,27 +242,22 @@ namespace MetaRules.Core
         public static Evaluation Evaluate(ISubject subject, IEnumerable<RuleSet> memberships, IEnumerable<RuleSet> equipment,
             Func<string, string, bool> opposed = null)
         {
-            // Existing groups keep their precedence. Every equipped item is a separate
-            // source, and an ineligible item cannot grant its own admission requirements.
-            var groups = new List<RuleSet>();
-            foreach (RuleSet set in memberships) if (set != null) groups.Add(set);
-            var worn = new List<RuleSet>();
-            foreach (RuleSet set in equipment) if (set != null && set.Allows(subject)) worn.Add(set);
-            var all = new List<RuleSet>(groups);
-            all.AddRange(worn);
-            Evaluation result = Evaluate(all);
-            if (opposed != null)
-            {
-                worn.AddRange(groups);
-                Settle(result, worn, opposed);
-            }
+            // What a creature wears is its most specific source: worn items go first, so
+            // their grants (a language, an item for a slot) win over its groups' while worn.
+            // Every equipped item is a separate source, and an ineligible item cannot grant
+            // its own admission requirements.
+            var ordered = new List<RuleSet>();
+            foreach (RuleSet set in equipment) if (set != null && set.Allows(subject)) ordered.Add(set);
+            foreach (RuleSet set in memberships) if (set != null) ordered.Add(set);
+            Evaluation result = Evaluate(ordered);
+            if (opposed != null) Settle(result, ordered, opposed);
             return result;
         }
 
         // Conflicting traits cannot be held together, and granting both would make them
-        // replace each other on every scan. What a creature wears is its most specific
-        // source, so an item's trait overrides its groups' (a sword's school over the one its
-        // species teaches) only while it is worn; otherwise the first declaration wins.
+        // replace each other on every scan: the first declaration in source order wins, so
+        // an item's trait overrides its groups' (a sword's school over the one its species
+        // teaches) only while it is worn.
         static void Settle(Evaluation result, List<RuleSet> ordered, Func<string, string, bool> opposed)
         {
             var kept = new List<string>();

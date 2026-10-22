@@ -597,6 +597,33 @@ static class Program
             actor.Traits.Add("native"); actor.Exclusive.Add(("native", "blades"));
             Assert(settled("native") == false && settled("unrelated") == null, "projection of replaced or untouched traits wrong");
         });
+        Test("a worn item's membership and equipment grants win over its groups' while worn", () =>
+        {
+            var actor = new Subject();
+            Declaration Language(long id) => new Declaration { Kind = EffectKind.Meta, Meta = MetaKind.Language, MetaId = id };
+            var species = new RuleSet { Declarations = new List<Declaration> { Language(1), Item("weapon:axe") } };
+            var ring = new RuleSet { Declarations = new List<Declaration> { Language(2), Item("weapon:sword") } };
+            Evaluation worn = RuleEngine.Evaluate(actor, new[] { species }, new[] { ring });
+            Assert(worn.Metas[MetaKind.Language] == 2 && worn.Items[0].Key == "weapon:sword", "group grant beat the worn item");
+            Evaluation bare = RuleEngine.Evaluate(actor, new[] { species }, new RuleSet[0]);
+            Assert(bare.Metas[MetaKind.Language] == 1 && bare.Items[0].Key == "weapon:axe", "group grant did not return without the item");
+        });
+        Test("a refused move names the rule set and the requirement that refuse it", () =>
+        {
+            var actor = new Subject(); actor.Groups[MetaKind.Kingdom] = 1; actor.Groups[MetaKind.Language] = 1;
+            var speaksGeric = new Restriction { Conditions = new List<Condition> { new Condition { Kind = ConditionKind.Membership, Meta = MetaKind.Language, MetaId = 1 } } };
+            var kingdom = new RuleSet { Restrictions = new List<Restriction> { speaksGeric } };
+            var changes = new Dictionary<MetaKind, long> { { MetaKind.Language, 4 } };
+            RuleSet refusing = RuleEngine.Refusing(actor, changes, new RuleSet[0], new[] { kingdom }, null, out Restriction rule);
+            Assert(refusing == kingdom && rule == speaksGeric, "blocking group or requirement not reported");
+            var language = new RuleSet { Banned = new List<long> { actor.Id } };
+            refusing = RuleEngine.Refusing(actor, changes, new[] { language }, new[] { kingdom }, null, out rule);
+            Assert(refusing == language && rule == null && language.Bans(actor), "ban not reported before kept groups");
+            speaksGeric.Any = true; speaksGeric.Conditions.Add(new Condition { Kind = ConditionKind.Membership, Meta = MetaKind.Language, MetaId = 4 });
+            Assert(RuleEngine.Refusing(actor, changes, new RuleSet[0], new[] { kingdom }, null, out _) == null, "accepted alternative still refused");
+            kingdom.Enabled = false;
+            Assert(kingdom.Failing(actor) == null && !kingdom.Bans(actor), "paused rules reported a failure");
+        });
         Console.WriteLine(passed + " behavioral tests passed.");
     }
 }
